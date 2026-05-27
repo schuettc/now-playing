@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dashboard · Now Playing</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b0b0d;
+    --fg: #e9e9ee;
+    --muted: #8a8a95;
+    --line: #1f1f25;
+    --accent: #6e8aff;
+    --accent-fg: #fff;
+    --danger: #ff7466;
+    --heat-0: #15151b;
+    --heat-1: #1e2a4a;
+    --heat-2: #2c4080;
+    --heat-3: #4a63b8;
+    --heat-4: #6e8aff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    -webkit-font-smoothing: antialiased;
+    line-height: 1.4;
+  }
+  header {
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+  header h1 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  header .sub {
+    color: var(--muted);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+  }
+  main {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 24px;
+  }
+  section + section { margin-top: 36px; }
+  h2 {
+    font-size: 12px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 600;
+    margin: 0 0 14px;
+  }
+  .empty {
+    color: var(--muted);
+    font-size: 13px;
+    padding: 24px;
+    text-align: center;
+    border: 1px dashed var(--line);
+    border-radius: 12px;
+  }
+
+  /* Top albums grid */
+  .albums {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+    gap: 14px;
+  }
+  .album {
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 12px;
+    background: rgba(255,255,255,0.02);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .album .art {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    background: var(--heat-0);
+    border-radius: 8px;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+    font-size: 11px;
+  }
+  .album .art img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  .album .title {
+    font-size: 13px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .album .artist {
+    font-size: 12px;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .album .stats {
+    font-size: 11px;
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+    border-top: 1px solid var(--line);
+    padding-top: 6px;
+    margin-top: auto;
+  }
+  .album .plays {
+    color: var(--accent);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Recent timeline */
+  .recent {
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .recent .row {
+    display: grid;
+    grid-template-columns: 140px 1fr 1fr;
+    gap: 12px;
+    padding: 10px 14px;
+    font-size: 13px;
+    border-bottom: 1px solid var(--line);
+    align-items: baseline;
+  }
+  .recent .row:last-child { border-bottom: none; }
+  .recent .row.head {
+    background: rgba(255,255,255,0.02);
+    color: var(--muted);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .recent .ts { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .recent .track .artist { color: var(--muted); }
+  .recent .album {
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 0; border: none; background: none;
+    display: block;
+  }
+
+  /* Heatmap */
+  .heatmap-wrap { overflow-x: auto; }
+  .heatmap {
+    display: grid;
+    grid-auto-flow: column;
+    grid-template-rows: repeat(7, 14px);
+    gap: 3px;
+    padding: 4px 2px;
+  }
+  .heatmap .cell {
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    background: var(--heat-0);
+  }
+  .heatmap .cell.l1 { background: var(--heat-1); }
+  .heatmap .cell.l2 { background: var(--heat-2); }
+  .heatmap .cell.l3 { background: var(--heat-3); }
+  .heatmap .cell.l4 { background: var(--heat-4); }
+  .heatmap-legend {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 10px;
+    justify-content: flex-end;
+  }
+  .heatmap-legend .cell {
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+  }
+</style>
+</head>
+<body>
+<header>
+  <div style="display:flex;align-items:baseline;gap:14px">
+    <a href="/" style="color:var(--muted);text-decoration:none;font-size:14px">← Now Playing</a>
+    <h1>Dashboard</h1>
+  </div>
+  <div class="sub" id="status">Loading…</div>
+</header>
+<main>
+  <section>
+    <h2>Top albums · last 30 days</h2>
+    <div id="albums" class="albums"></div>
+  </section>
+  <section>
+    <h2>Activity · last 90 days</h2>
+    <div class="heatmap-wrap">
+      <div id="heatmap" class="heatmap"></div>
+    </div>
+    <div class="heatmap-legend">
+      <span>less</span>
+      <span class="cell"></span>
+      <span class="cell l1"></span>
+      <span class="cell l2"></span>
+      <span class="cell l3"></span>
+      <span class="cell l4"></span>
+      <span>more</span>
+    </div>
+  </section>
+  <section>
+    <h2>Recent plays</h2>
+    <div id="recent" class="recent"></div>
+  </section>
+</main>
+<script>
+"use strict";
+const statusEl = document.getElementById('status');
+const albumsEl = document.getElementById('albums');
+const recentEl = document.getElementById('recent');
+const heatmapEl = document.getElementById('heatmap');
+
+function el(tag, props = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === 'class') node.className = v;
+    else if (k === 'text') node.textContent = v;
+    else if (k.startsWith('on')) node.addEventListener(k.slice(2).toLowerCase(), v);
+    else if (v !== null && v !== undefined && v !== false) node.setAttribute(k, v);
+  }
+  for (const c of children) {
+    if (c == null || c === false) continue;
+    node.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+  }
+  return node;
+}
+
+function fmtRelative(unixSec) {
+  if (!unixSec) return '';
+  const now = Date.now() / 1000;
+  const dt = now - unixSec;
+  if (dt < 60) return 'just now';
+  if (dt < 3600) return `${Math.floor(dt / 60)}m ago`;
+  if (dt < 86400) return `${Math.floor(dt / 3600)}h ago`;
+  if (dt < 86400 * 7) return `${Math.floor(dt / 86400)}d ago`;
+  const d = new Date(unixSec * 1000);
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function fmtTime(unixSec) {
+  if (!unixSec) return '';
+  const d = new Date(unixSec * 1000);
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  if (sameDay) {
+    return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  }
+  return d.toLocaleString(undefined, {
+    month: 'short', day: 'numeric',
+    hour: 'numeric', minute: '2-digit',
+  });
+}
+
+function renderAlbum(a) {
+  const card = el('div', { class: 'album' });
+  const art = el('div', { class: 'art' });
+  if (a.release_id) {
+    const img = el('img', {
+      src: `/art/${encodeURIComponent(a.release_id)}`,
+      alt: '',
+      loading: 'lazy',
+    });
+    img.addEventListener('error', () => {
+      img.remove();
+      art.textContent = 'no art';
+    });
+    art.appendChild(img);
+  } else {
+    art.textContent = 'no art';
+  }
+  card.appendChild(art);
+  card.appendChild(el('div', { class: 'title', title: a.album || '', text: a.album || '—' }));
+  card.appendChild(el('div', { class: 'artist', title: a.artist || '', text: a.artist || '' }));
+  const stats = el('div', { class: 'stats' });
+  stats.appendChild(el('span', { class: 'plays', text: `${a.plays} play${a.plays === 1 ? '' : 's'}` }));
+  stats.appendChild(el('span', { text: fmtRelative(a.last_played) }));
+  card.appendChild(stats);
+  return card;
+}
+
+function renderRecent(plays) {
+  recentEl.replaceChildren();
+  if (!plays.length) {
+    recentEl.appendChild(el('div', { class: 'empty', text: 'No plays yet.' }));
+    return;
+  }
+  recentEl.appendChild(
+    el('div', { class: 'row head' },
+      el('div', { text: 'When' }),
+      el('div', { text: 'Track' }),
+      el('div', { text: 'Album' }),
+    )
+  );
+  for (const p of plays) {
+    const track = el('div', { class: 'track' });
+    track.appendChild(document.createTextNode(p.title || '—'));
+    if (p.artist) {
+      track.appendChild(el('span', { class: 'artist', text: ' · ' + p.artist }));
+    }
+    recentEl.appendChild(
+      el('div', { class: 'row' },
+        el('div', { class: 'ts', text: fmtTime(p.started_at) }),
+        track,
+        el('div', { class: 'album', title: p.album || '', text: p.album || '' }),
+      )
+    );
+  }
+}
+
+function bucketFor(count, maxCount) {
+  if (!count) return 0;
+  if (maxCount <= 0) return 0;
+  const r = count / maxCount;
+  if (r > 0.75) return 4;
+  if (r > 0.5)  return 3;
+  if (r > 0.25) return 2;
+  return 1;
+}
+
+function renderHeatmap(items, days) {
+  heatmapEl.replaceChildren();
+  const counts = new Map();
+  for (const it of items) counts.set(it.date, it.count);
+  const maxCount = items.reduce((m, it) => Math.max(m, it.count), 0);
+
+  // Build a column-aligned grid: each column = one week, rows 0..6 = Sun..Sat.
+  // Start `days-1` ago and walk forward to today. Pad the first column with
+  // empty placeholder cells so the first real day lands on its weekday row.
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const start = new Date(today);
+  start.setDate(start.getDate() - (days - 1));
+  // Back up to the previous Sunday so the grid starts on a column boundary.
+  const startDow = start.getDay();
+  const cursor = new Date(start);
+  cursor.setDate(cursor.getDate() - startDow);
+
+  const end = new Date(today);
+  while (cursor <= end) {
+    const inRange = cursor >= start;
+    const iso = cursor.toISOString().slice(0, 10);
+    // Recompute the local-time ISO date because the server emits localtime
+    // dates, not UTC. Use local components to match.
+    const y = cursor.getFullYear();
+    const m = String(cursor.getMonth() + 1).padStart(2, '0');
+    const d = String(cursor.getDate()).padStart(2, '0');
+    const localIso = `${y}-${m}-${d}`;
+    const count = inRange ? (counts.get(localIso) || 0) : 0;
+    const level = inRange ? bucketFor(count, maxCount) : 0;
+    const cell = el('div', {
+      class: 'cell' + (level ? ` l${level}` : ''),
+      title: inRange ? `${localIso} · ${count} play${count === 1 ? '' : 's'}` : '',
+    });
+    heatmapEl.appendChild(cell);
+    cursor.setDate(cursor.getDate() + 1);
+  }
+}
+
+async function loadAll() {
+  try {
+    const [topR, recentR, heatR] = await Promise.all([
+      fetch('/api/history/top-albums?since_days=30&limit=10'),
+      fetch('/api/history/recent?limit=50'),
+      fetch('/api/history/heatmap?days=90'),
+    ]);
+    if (!topR.ok || !recentR.ok || !heatR.ok) {
+      throw new Error(`HTTP ${topR.status}/${recentR.status}/${heatR.status}`);
+    }
+    const [top, recent, heat] = await Promise.all([
+      topR.json(), recentR.json(), heatR.json(),
+    ]);
+
+    albumsEl.replaceChildren();
+    const items = top.items || [];
+    if (!items.length) {
+      albumsEl.appendChild(el('div', { class: 'empty', text: 'No plays in the last 30 days.' }));
+    } else {
+      for (const a of items) albumsEl.appendChild(renderAlbum(a));
+    }
+
+    renderRecent(recent.plays || []);
+    renderHeatmap(heat.items || [], heat.days || 90);
+
+    const now = new Date();
+    statusEl.textContent = `Updated ${now.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`;
+  } catch (e) {
+    statusEl.textContent = `Error: ${e.message}`;
+  }
+}
+
+loadAll();
+setInterval(loadAll, 30000);
+</script>
+</body>
+</html>

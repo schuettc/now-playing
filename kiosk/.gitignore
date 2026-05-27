@@ -1,0 +1,10 @@
+node_modules
+.DS_Store
+*.local
+.vite
+*.tsbuildinfo
+
+# dist/ is committed because the Pi has no Node toolchain — it consumes the
+# pre-built bundle directly. Rebuild on a dev machine before pushing.
+!dist/
+!dist/**

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 600" width="600" height="600">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1a1a1f"/>
+      <stop offset="100%" stop-color="#0a0a0c"/>
+    </linearGradient>
+  </defs>
+  <rect width="600" height="600" fill="url(#g)"/>
+  <rect x="60" y="60" width="480" height="480" fill="none" stroke="#d4c9a8" stroke-width="2"/>
+  <text x="300" y="280" text-anchor="middle" font-family="Times, serif" font-size="58" font-weight="400" fill="#e8dcb6" letter-spacing="14" font-style="italic">Gentlemen</text>
+  <line x1="180" y1="320" x2="420" y2="320" stroke="#7a6a44" stroke-width="1"/>
+  <text x="300" y="365" text-anchor="middle" font-family="Times, serif" font-size="14" fill="#a89868" letter-spacing="6">THE  AFGHAN  WHIGS</text>
+</svg>

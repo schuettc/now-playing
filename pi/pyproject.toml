@@ -1,0 +1,153 @@
+[project]
+name = "nowplaying"
+version = "0.1.0"
+description = "Now Playing kiosk — Pi-side orchestrator (Sonos UPnP + UFO202 audio identification)"
+requires-python = ">=3.12"
+dependencies = [
+    # 0.31.1 floor: contains the events_asyncio EventListener lifecycle fix
+    # (SoCo/SoCo#1001) — deferred-stop refcounting + race-tolerant async_stop.
+    # 0.31.0 emits an FD-close traceback on every UPnP resubscribe cycle and
+    # can orphan listener state under unlucky timing; do not regress below.
+    "soco>=0.31.1",
+    # aiohttp floor: skylos reads the constraint floor (not the resolved
+    # version) when checking CVE coverage. 3.13.5 is the latest patched
+    # release as of 2026-05-16; closes 18 GHSA advisories on the 3.12.x
+    # line. API surface used (ClientSession, ClientTimeout, ClientError,
+    # ClientPayloadError) is stable across 3.12 → 3.13.
+    "aiohttp>=3.13.5",
+    # python-dotenv floor: 1.2.2 closes GHSA-mf9w-mj5x. Only `load_dotenv`
+    # is used; API stable across the bump.
+    "python-dotenv>=1.2.2",
+]
+
+[project.optional-dependencies]
+# Phase 2+ (audio capture). Install with: uv sync --extra audio
+audio = [
+    "numpy>=1.26",
+    "sounddevice>=0.5",
+    "librosa>=0.10",
+]
+# Phase 3a+ (Discogs sync). Install with: uv sync --extra discogs
+discogs = [
+    "python3-discogs-client>=2.7",
+]
+# Phase 3c+ (ShazamIO fallback). Install with: uv sync --extra shazam
+shazam = [
+    "shazamio>=0.7",
+]
+# Optional: LLM-assisted decisions (Anthropic Haiku 4.5) at four cascade
+# decision points — cover/tribute filter, end-of-side advance, /identify
+# release ranker, fingerprint promotion gate. Activated by setting
+# ANTHROPIC_API_KEY in pi/.env. Without the key the LLMAssist module
+# no-ops and the orchestrator uses today's hardcoded heuristics.
+# Install with: uv sync --extra llm
+llm = [
+    "anthropic>=0.40",
+]
+# Optional: local audio fingerprint fallback. Shazam-style landmark
+# hashing implemented against SQLite. Activated by setting
+# FINGERPRINT_ENABLED=true in pi/.env (lands in the fingerprint-cascade
+# feature). Without it the orchestrator falls back to tracklist-aware
+# advancement on Shazam miss.
+# Install with: uv sync --extra fingerprint
+fingerprint = [
+    "scipy>=1.10",
+    "soundfile>=0.13",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["nowplaying"]
+
+[tool.uv]
+dev-dependencies = [
+    "ruff>=0.6",
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.skylos]
+# Globally suppress rule IDs that are categorically false positives or are
+# advisory-only in this codebase. Per-site SSRF (SKY-D216) and path-traversal
+# (SKY-D215) suppressions stay inline so each call site documents its own
+# rationale.
+ignore = [
+    # --- Security false positives (cache-key hashing, not crypto) ---
+    "SKY-D207",  # Weak hash SHA1 — used only as a cache key digest (artcache); non-crypto
+    "SKY-D208",  # Weak hash MD5 — same: cache key in scrobble.py / scripts/lastfm_auth.py
+
+    # --- Dependency-resolution false positives ---
+    "SKY-D222",  # Hallucinated dependency — false positive for local script imports (scripts/ imports sibling scripts via sys.path)
+    "SKY-D223",  # Undeclared dependency — scripts/ and tests/ use deps from [project.optional-dependencies] / [tool.uv.dev-dependencies] which skylos doesn't read
+
+    # --- Architectural advisories: skylos itself documents these as
+    #     "this file-level I/A/D signal does not block gates unless I/A/D
+    #     enforcement is enabled." Small-project metrics noise. ---
+    "SKY-Q801",  # High module instability — advisory
+    "SKY-Q802",  # Distance from main sequence — advisory
+    "SKY-Q803",  # Module in architectural pain/uselessness zone — advisory
+    "SKY-Q804",  # DIP violation — advisory
+
+    # --- Pythonic idioms skylos is over-strict about ---
+    "SKY-L027",  # Duplicate string literal — false-positive heavy for dict-keyed payload code where JSON field names (`"title"`, `"artist"`, ...) are NOT magic constants but the public contract with the kiosk
+    "SKY-L028",  # Too many returns — guard-clause early-return is the pythonic idiom; this rule penalizes it
+
+    # --- Policy nags about config files we don't use ---
+    "SKY-R101",  # Python type-check policy absent — project uses runtime checks + tests, not static typing
+    "SKY-R102",  # Python lint policy absent — ruff is configured via [tool.uv.dev-dependencies]
+    "SKY-R103",  # Skylos gate policy absent — gate config is the [tool.skylos] block itself
+    "SKY-R104",  # Pre-commit policy file absent — .pre-commit-config.yaml lives at repo root, not pi/
+
+    # --- Clone detection: intentional parallel-method patterns ---
+    "SKY-C401",  # Clone — fires on intentional parallel-method patterns (LLMAssist.judge_* mirror set, backfill_track_durations release/master mirror pair). Inline + block ignores don't suppress this rule reliably; globally muting is the documented workaround. Re-evaluate if real DRY violations appear.
+
+    # --- Test-fixture file writes: pytest tmp_path is not user-influenced ---
+    # Why: SKY-D324 (symlink-following file write) fires on every test that
+    # does `(tmp_path / "art.jpg").write_bytes(...)`.  pytest's tmp_path
+    # fixture creates a fresh, process-owned directory per test — there is no
+    # user-controlled symlink attack surface.  All ~25 D324 findings are in
+    # pi/tests/**; production writes go through safe_write_bytes()
+    # (pi/nowplaying/_io_safe.py) which is already D324-safe.
+    "SKY-D324",  # Symlink-following file write — all findings are pytest tmp_path fixtures, not user-reachable paths
+
+    # --- Test-class cohesion: LCOM4 is a false positive on test classes ---
+    # Why: SKY-Q702 (low class cohesion, LCOM4) fires on test classes that
+    # group tests by function-under-test rather than by shared state or
+    # fixtures.  Test classes have no shared instance state by design — each
+    # method is an independent test case.  LCOM4=6 in TestSafeWriteBytes and
+    # TestIsSafeUnder reflects intentional single-concern grouping, not a
+    # structural defect.  All findings are in pi/tests/**; production code is
+    # not affected.
+    "SKY-Q702",  # Low class cohesion (LCOM4) — test classes group by function-under-test, not shared state; false positive
+
+    # --- God-file threshold: test files grow with the function-under-test ---
+    # Why: SKY-Q502 (god file — too many definitions) fires on three test
+    # files that cover wide APIs: test_llm_track_guess_hook.py (68 defs /
+    # 937 LOC), test_musicbrainz_durations.py (101 defs / 1076 LOC), and
+    # test_state_decay.py (615 LOC).  Test files naturally accumulate one
+    # test function per behaviour; splitting them by sub-concern adds
+    # discoverability friction with no structural benefit.  Consistent with
+    # PR #196 (SKY-D324) and PR #212 (SKY-Q702) — both suppressed test-only
+    # false positives at the config level.  All findings are in
+    # pi/tests/**; production modules are not affected.
+    "SKY-Q502",  # God file (too many definitions) — test files grow with the function-under-test; false positive for pi/tests/**
+
+    # --- Test-fixture file reads: pytest tmp_path is not user-influenced ---
+    # Why: SKY-D325 (symlink-following or unbounded file read) fires on the two
+    # test helpers in test_io_safe.py that read from tmp_path to verify
+    # safe_read_bytes / safe_write_bytes wrote the expected bytes.  pytest's
+    # tmp_path fixture creates a fresh, process-owned directory per test — there
+    # is no user-controlled symlink attack surface.  Production reads go through
+    # safe_read_bytes() (pi/nowplaying/_io_safe.py) which is already D325-safe.
+    # Consistent with the SKY-D324 / SKY-Q502 / SKY-Q702 test-suppression
+    # pattern established in PRs #195, #196, #212, #213.
+    "SKY-D325",  # Symlink-following or unbounded read — test fixtures read from pytest tmp_path; false positive for pi/tests/**
+]
+# Raise the function-length and arg-count thresholds modestly:
+# 50 lines is tight for orchestrator-style code with inline comments;
+# 5 args is tight for handler signatures that need state + bcast + payload.
+max_lines = 80
+max_args = 7

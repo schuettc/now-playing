@@ -1,0 +1,87 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Design tokens — sourced from
+   docs/features/confirmed-fingerprint-coverage/design-output/README.md
+   § "Design tokens". Used by Feature D's confirm-first UX surfaces
+   (StatusPill, GuessConfirm, TappableTrackRow, LearningChip,
+   AlbumCard, SearchField). */
+:root {
+  /* Dot colors — across-the-room read */
+  --dot-ok: #7fd08e;
+  --dot-wait: #f2c266;
+  --dot-idle: rgba(255, 255, 255, 0.35);
+  --dot-user: #b59ce8;
+
+  /* Background */
+  --bg-base: #0a0a0a;
+  --bg-base-deep: #050505;
+
+  /* Semantic */
+  --sem-danger: #e27b6f;
+  --sem-warn-tint: rgba(242, 194, 102, 0.08);
+  --sem-warn-edge: rgba(242, 194, 102, 0.35);
+  --sem-ok-tint: rgba(127, 208, 142, 0.16);
+  --sem-ok-edge: rgba(127, 208, 142, 0.5);
+
+  /* White-opacity ramp */
+  --text-primary: rgba(255, 255, 255, 0.92);
+  --text-body: rgba(255, 255, 255, 0.85);
+  --text-secondary: rgba(255, 255, 255, 0.6);
+  --text-tertiary: rgba(255, 255, 255, 0.45);
+  --text-quaternary: rgba(255, 255, 255, 0.3);
+  --text-hairline: rgba(255, 255, 255, 0.06);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  background: #000;
+  color: #fff;
+  font-family: 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+  cursor: url(/cursor-light.svg) 4 4, default;
+}
+
+button,
+a,
+[role='button'] {
+  cursor: pointer;
+}
+
+* {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* GuessDrainStrip — 60s linear progress strip that drains from
+   full width to zero. Used by GuessConfirmCard. */
+@keyframes guessConfirmDrain {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
+/* Awaiting-confirm pulse — the ONLY tone that animates per design
+   decision: pulse is reserved for "we need a tap." Every other state
+   holds steady so the kiosk reads as calm from across the room. */
+@keyframes statusPulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(242, 194, 102, 0.55);
+  }
+  70% {
+    box-shadow: 0 0 0 12px rgba(242, 194, 102, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(242, 194, 102, 0);
+  }
+}

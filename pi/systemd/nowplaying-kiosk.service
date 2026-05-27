@@ -1,0 +1,44 @@
+[Unit]
+Description=Now Playing kiosk (Chromium pointed at local UI)
+After=graphical.target nowplaying-orchestrator.service
+Wants=nowplaying-orchestrator.service
+Requires=graphical.target
+ConditionPathExists=/usr/bin/chromium
+
+[Service]
+Type=simple
+User=__NOWPLAYING_USER__
+Group=__NOWPLAYING_USER__
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=__NOWPLAYING_HOME__/.Xauthority
+# Note: XCURSOR_SIZE / XCURSOR_THEME are NOT set here. The Pi runs
+# Wayland (compositor: labwc), so the compositor — not Chromium —
+# renders the cursor. Those env vars are installed into
+# ~/.config/labwc/environment by pi/systemd/install.sh instead. See
+# docs/features/kiosk-cursor-visibility-v2/.
+# Flush Chromium's HTTP + code caches on every kiosk start. Vite-hashed
+# JS/CSS bust correctly via filename, but the unhashed `index.html`
+# entry document does not — so after a kiosk-bundle deploy, the browser
+# would otherwise keep loading the stale previous shell. Leading `-` on
+# ExecStartPre lets systemd ignore non-zero exit on a fresh install
+# where the cache dirs don't exist yet. `\x20` is systemd's escape for
+# the literal space in the `Code Cache` directory name.
+ExecStartPre=-/bin/rm -rf __NOWPLAYING_HOME__/.cache/chromium/Default/Cache __NOWPLAYING_HOME__/.cache/chromium/Default/Code\x20Cache
+ExecStartPre=/bin/sh -c 'command -v curl >/dev/null || { echo "curl not installed; install with: apt-get install -y curl" >&2; exit 1; }'
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 30); do curl -fsS http://localhost:8080/health >/dev/null && exit 0; sleep 1; done; exit 1'
+ExecStart=/usr/bin/chromium \
+    --kiosk \
+    --noerrdialogs \
+    --disable-infobars \
+    --disable-features=TranslateUI \
+    --no-first-run \
+    --autoplay-policy=no-user-gesture-required \
+    --check-for-update-interval=31536000 \
+    --touch-events=enabled \
+    --enable-touch-drag-drop \
+    http://localhost:8080/
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=graphical.target

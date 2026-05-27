@@ -1,0 +1,8 @@
+# Feature workflow configuration
+# Written by /feature-init — edit anytime to change settings
+
+branch:
+  prefix: "feature/"    # Branch naming: <prefix><feature-id>
+  target: "main"    # Base branch for PRs and merges
+
+reviewer: "gemini"  # External reviewer: gemini, codex, or none

@@ -1,0 +1,60 @@
+name: Bug report
+description: Something's not working — kiosk shows the wrong thing, service won't start, recognition is off, etc.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing! Before submitting, try asking Claude *"The orchestrator service won't start"* (or whatever's broken) in this repo — the `.claude/skills/nowplaying-troubleshoot` skill walks through systematic diagnosis and resolves most install-time issues without needing an issue.
+
+        If that doesn't help, please fill out the fields below.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you see on the kiosk (or in the logs)? What did you expect to see instead?
+      placeholder: |
+        Played a Beatles record. Kiosk shows "Anthology Collection" but I'm playing Rubber Soul.
+    validations:
+      required: true
+
+  - type: input
+    id: pi-os
+    attributes:
+      label: Pi OS version
+      description: Output of `cat /etc/os-release | head -2`.
+      placeholder: |
+        PRETTY_NAME="Debian GNU/Linux 13 (trixie)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: service-status
+    attributes:
+      label: Service status
+      description: Output of `systemctl status nowplaying-orchestrator`.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: journal-slice
+    attributes:
+      label: Recent journal slice
+      description: |
+        Output of:
+        ```
+        journalctl -u nowplaying-orchestrator --since "1 hour ago" --no-pager | tail -100
+        ```
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: anything-else
+    attributes:
+      label: Anything else
+      description: Recent changes, hardware specifics, network setup quirks, etc.
+    validations:
+      required: false

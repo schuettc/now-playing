@@ -1,0 +1,3 @@
+# Installed to ~/.config/labwc/environment by pi/systemd/install.sh
+XCURSOR_SIZE=48
+XCURSOR_THEME=Adwaita

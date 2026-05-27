@@ -1,0 +1,85 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Secrets and local config
+.env
+.env.local
+*.pem
+*.key
+
+# Pi runtime data
+pi/data/
+*.pklz
+*.sqlite
+*.sqlite3
+*.db
+*.wav
+*.flac
+
+# Node / Vite
+node_modules/
+dist/
+.vite/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Auto-generated locally by hooks — not committed
+docs/features/DASHBOARD.md
+
+# Journey/handoff docs — kept locally for reference, excluded from repo
+# (the shipped product is documented in README/ARCHITECTURE/INSTALL; the
+# how-we-got-here history lives only on disk).
+STATUS.md
+PROJECT_HANDOFF.md
+docs/features/
+docs/superpowers/
+docs/design/
+docs/sweep-plan-*.md
+
+# Claude Code workspace files (commit skills/ + project hooks, ignore transient state)
+.claude/*
+!.claude/skills/
+!.claude/skills/**
+!.claude/settings.json
+!.claude/hooks/
+!.claude/hooks/**
+pi/uv.lock
+pi/data/fingerprint.db
+pi/data/fingerprint.db-*
+
+# Skylos (dead-code finder) cache — local-only
+.skylos/
+
+# Live verify session artifacts — PNG/log captures from the Pi
+# orchestrator used to debug live behavior. Sessions are large
+# (~100MB+) and local-only; the takeaways land in docs/features/.
+# (Curated public screenshots for README/USING live in docs/screenshots/.)
+screenshots/
+!docs/screenshots/
+
+# Superpowers brainstorm session content — local mockup HTML files
+# the brainstorming skill writes when designing new UI. Per the
+# skill's convention, these persist in-repo for later reference
+# but aren't committed.
+.superpowers/
+
+# Per-subdir Claude Code workspace files — same rule as the repo-
+# root .claude/* allowlist above: transient state stays local.
+pi/.claude/
+pi/.playwright-mcp/

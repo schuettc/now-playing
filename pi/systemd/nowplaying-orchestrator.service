@@ -1,0 +1,21 @@
+[Unit]
+Description=Now Playing orchestrator (Sonos listener + vinyl recognition)
+After=network-online.target sound.target
+Wants=network-online.target sound.target
+
+[Service]
+Type=simple
+User=__NOWPLAYING_USER__
+Group=__NOWPLAYING_USER__
+WorkingDirectory=__NOWPLAYING_HOME__/now-playing/pi
+ExecStart=__NOWPLAYING_HOME__/now-playing/pi/.venv/bin/python -m nowplaying.main
+Restart=on-failure
+RestartSec=10s
+StandardOutput=journal
+StandardError=journal
+Environment=PYTHONUNBUFFERED=1
+MemoryHigh=512M
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target

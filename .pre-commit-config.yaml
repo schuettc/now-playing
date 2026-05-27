@@ -1,0 +1,38 @@
+# Pre-commit hooks for the Now Playing repo.
+#
+# Install once per clone:
+#   pipx install pre-commit && pre-commit install
+#
+# Then `git commit` will run the hooks below on staged files.
+# Manual full-tree run:  pre-commit run --all-files
+repos:
+  - repo: local
+    hooks:
+      # Skylos `agent pre-commit` is the vendor's purpose-built local hook.
+      # It checks staged files for: AI-introduced security regressions,
+      # secrets, prompt-injection patterns, dependency hallucinations, and
+      # high-signal quality regressions on production source.
+      #
+      # It is NOT a full SAST run — for full dead-code / SSRF / CC scans use
+      # `uvx skylos pi/ -a` locally, or wire `skylos cicd init` into CI for
+      # PR-level gating.
+      - id: skylos-agent
+        name: skylos (staged-file regression scan)
+        entry: uvx skylos agent pre-commit .
+        language: system
+        pass_filenames: false
+        types_or: [python, toml]
+        stages: [pre-commit]
+
+      # Fallow audits the kiosk frontend on commits that touch its TS
+      # source. Reports dead code, complexity regressions, and clones
+      # *introduced* by the changeset (inherited findings are ignored
+      # by default — see `fallow audit --gate all` to be stricter).
+      # Config: kiosk/.fallowrc.json.
+      - id: fallow-audit-kiosk
+        name: fallow audit (kiosk frontend)
+        entry: bash -c 'cd kiosk && npx fallow audit'
+        language: system
+        pass_filenames: false
+        files: ^kiosk/.*\.(ts|tsx)$
+        stages: [pre-commit]

@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 600" width="600" height="600">
+  <defs>
+    <radialGradient id="g" cx="50%" cy="40%" r="80%">
+      <stop offset="0%" stop-color="#ffd27a"/>
+      <stop offset="55%" stop-color="#c46a3b"/>
+      <stop offset="100%" stop-color="#1c0a07"/>
+    </radialGradient>
+    <filter id="noise">
+      <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="3"/>
+      <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.08 0"/>
+    </filter>
+  </defs>
+  <rect width="600" height="600" fill="url(#g)"/>
+  <circle cx="300" cy="240" r="160" fill="#0d0303" opacity="0.85"/>
+  <circle cx="245" cy="190" r="42" fill="#fff5d8" opacity="0.92"/>
+  <rect width="600" height="600" filter="url(#noise)"/>
+  <text x="300" y="500" text-anchor="middle" font-family="Georgia, serif" font-size="34" font-weight="700" fill="#fff5d8" letter-spacing="6">FAILURE</text>
+  <text x="300" y="540" text-anchor="middle" font-family="Georgia, serif" font-size="18" font-style="italic" fill="#fff5d8" opacity="0.75">Fantastic Planet</text>
+</svg>
