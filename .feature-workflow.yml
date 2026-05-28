@@ -5,4 +5,4 @@ branch:
   prefix: "feature/"    # Branch naming: <prefix><feature-id>
   target: "main"    # Base branch for PRs and merges
 
-reviewer: "gemini"  # External reviewer: gemini, codex, or none
+reviewer: "none"  # External reviewer: gemini, codex, or none
