@@ -6,6 +6,18 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/). Versioni
 
 ---
 
+## [1.2.0] — 2026-05-28
+
+On-screen touch keyboard. The lookup search — the only text field on the otherwise tap-only kiosk — now raises an in-app virtual keyboard, so manual artist/album/catalog search works on the touchscreen without a physical keyboard attached.
+
+### Kiosk UX
+
+- **kiosk-touch-keyboard** — New `VirtualKeyboard` touch primitive (digit row + QWERTY, space/backspace/clear/Done) wired to the `/lookup` search field. Keys retain input focus via `pointerdown` `preventDefault` so the caret never drops; append/backspace edit at the end of the query; the keyboard fixes to the viewport bottom and the results grid pads to stay clear. `SearchField` now forwards a ref to its `<input>`, which also makes the existing `useIdentifyScope` mount-focus fire (previously a silent no-op).
+
+[1.2.0]: https://github.com/schuettc/now-playing/releases/tag/v1.2.0
+
+---
+
 ## [1.1.0] — 2026-05-27
 
 No-Discogs experience. The album-context layer (art, tracklist, side timer, BEST GUESS, local fingerprint cascade) works for records that aren't in your Discogs collection — discovered via MusicBrainz on first play, persisted to a parallel `discovered.sqlite`, and fingerprinted the same way as Discogs-synced releases.
