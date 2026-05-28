@@ -7,6 +7,7 @@ import { useIdentifyActions } from '@/features/identify/useIdentifyActions';
 import { useIdentifyScope } from '@/features/identify/useIdentifyScope';
 import { useIdentifySearch } from '@/features/identify/useIdentifySearch';
 import { SearchField } from '@/components/touch/SearchField';
+import { VirtualKeyboard } from '@/components/touch/VirtualKeyboard';
 import { track as telemetryTrack } from '@/lib/telemetry';
 import type { LookupVariant } from '@/lib/lookupVariant';
 import { usePickedRef } from './pickedContext';
@@ -124,19 +125,24 @@ export function SearchSection({
     expandedReleaseId: search.expandedReleaseId,
   });
 
-  // Virtual-keyboard collapse: when the input is focused, hide the
-  // grid until results are typed. Aligns with the design's
-  // "virtual keyboard takes ~50% vertical space" guidance.
-  const [inputFocused, setInputFocused] = useState(false);
-  const showGrid = !inputFocused || search.searchQuery.length > 0;
+  // Virtual-keyboard collapse: when the on-screen keyboard is up, hide
+  // the grid until results are typed. Aligns with the design's
+  // "virtual keyboard takes ~50% vertical space" guidance. Driven by an
+  // explicit state because the keys preventDefault to retain input focus,
+  // so onBlur alone can't tell us the keyboard is dismissed.
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
+  const showGrid = !keyboardVisible || search.searchQuery.length > 0;
 
   return (
-    <section className="flex flex-col gap-4">
+    <section
+      className="flex flex-col gap-4"
+      style={keyboardVisible ? { paddingBottom: '50vh' } : undefined}
+    >
       <SearchField
+        ref={search.searchInputRef}
         value={search.searchQuery}
         onChange={search.onSearchInput}
-        onFocus={() => setInputFocused(true)}
-        onBlur={() => setInputFocused(false)}
+        onFocus={() => setKeyboardVisible(true)}
         size={searchSize}
         placeholder="Search artist, album, or catalog number…"
       />
@@ -151,6 +157,16 @@ export function SearchSection({
         />
       )}
       <Toast toast={search.toast} />
+      <VirtualKeyboard
+        visible={keyboardVisible}
+        value={search.searchQuery}
+        onChange={search.onSearchInput}
+        onClear={search.clearSearch}
+        onDone={() => {
+          setKeyboardVisible(false);
+          search.searchInputRef.current?.blur();
+        }}
+      />
     </section>
   );
 }

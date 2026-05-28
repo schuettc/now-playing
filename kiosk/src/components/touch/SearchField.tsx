@@ -1,4 +1,4 @@
-import { useId } from 'react';
+import { forwardRef, useId } from 'react';
 
 type SearchFieldSize = 'md' | 'lg';
 
@@ -28,9 +28,9 @@ export function searchFieldShowsClear(value: string): boolean {
  * Spec: docs/features/confirmed-fingerprint-coverage/design-output/
  * README.md § "Component vocabulary" → SearchField.
  */
-export function SearchField({
+export const SearchField = forwardRef<HTMLInputElement, Props>(function SearchField({
   value, onChange, onFocus, onBlur, size = 'md', placeholder, autoFocus,
-}: Props) {
+}, ref) {
   const id = useId();
   const dims = SIZE_PX[size];
   const showsClear = searchFieldShowsClear(value);
@@ -54,6 +54,7 @@ export function SearchField({
         ⌕
       </span>
       <input
+        ref={ref}
         id={id}
         type="text"
         value={value}
@@ -81,4 +82,4 @@ export function SearchField({
       )}
     </div>
   );
-}
+});
