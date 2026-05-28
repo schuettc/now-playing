@@ -4,7 +4,5 @@ node_modules
 .vite
 *.tsbuildinfo
 
-# dist/ is committed because the Pi has no Node toolchain — it consumes the
-# pre-built bundle directly. Rebuild on a dev machine before pushing.
-!dist/
-!dist/**
+# dist/ is a build artifact, not tracked. The Pi has no Node toolchain, so the
+# bundle is built on a dev machine and rsync'd to the Pi (see docs/INSTALL.md).
