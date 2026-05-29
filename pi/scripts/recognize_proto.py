@@ -178,6 +178,7 @@ def _attach_discovered_or_schedule(
                     "side": t.get("side"),
                     "title": t.get("title"),
                     "duration_seconds": t.get("duration_seconds"),
+                    "clean_title": t.get("clean_title"),
                 }
                 for t in tracks
             ]
@@ -304,7 +305,9 @@ def _release_fields(rel: dict) -> dict:
         "catno": rel.get("catno"),
         "art_path": rel.get("art_path"),
         "tracklist": [
-            {"position": t["position"], "side": t["side"], "title": t["title"], "duration_seconds": t["duration_seconds"]}
+            {"position": t["position"], "side": t["side"], "title": t["title"],
+             "duration_seconds": t["duration_seconds"],
+             "clean_title": t.get("clean_title")}
             for t in (rel.get("tracks") or [])
         ],
     }
