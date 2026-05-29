@@ -30,6 +30,7 @@ from nowplaying.discovery.schema import (
     open_ro,
     open_rw,
 )
+from nowplaying.titleclean import clean_title as _clean_title
 
 log = logging.getLogger("nowplaying.discovery")
 
@@ -331,18 +332,29 @@ async def _resolve_artist_album_mbid(
 # ── Persistence ────────────────────────────────────────────────────────
 
 
-async def persist(release: dict) -> None:
+async def persist(release: dict, *, llm=None) -> None:
     """Write a release + tracks into discovered.sqlite. Idempotent:
     re-running with the same MBID replaces the release row and rewrites
     its tracks.
+
+    ``llm`` is forwarded to the title-cleaner; pass ``self.llm`` from the
+    orchestrator discovery task for LLM-assisted cleaning, or omit / pass
+    ``None`` to use the regex fallback only.
     """
     mbid = release.get("mbid")
     if not mbid:
         return
-    await asyncio.to_thread(_persist_sync, release)
+    tracks = release.get("tracks") or []
+    # Clean all track titles before handing off to the sync writer.
+    cleaned: list[tuple[str, str]] = []
+    for t in tracks:
+        raw = t.get("title") or ""
+        clean, source = await _clean_title(raw, llm)
+        cleaned.append((clean, source))
+    await asyncio.to_thread(_persist_sync, release, cleaned)
 
 
-def _persist_sync(release: dict) -> None:
+def _persist_sync(release: dict, cleaned: list[tuple[str, str]]) -> None:
     mbid = release["mbid"]
     artist = release.get("artist") or ""
     title = release.get("album") or ""
@@ -365,15 +377,18 @@ def _persist_sync(release: dict) -> None:
             con.execute(
                 "DELETE FROM tracks WHERE mbid = ?", (mbid,),
             )
-            for t in tracks:
+            for t, (clean, source) in zip(tracks, cleaned):
                 con.execute(
                     "INSERT INTO tracks "
-                    "(mbid, position, side, title, duration_seconds) "
-                    "VALUES (?, ?, ?, ?, ?)",
+                    "(mbid, position, side, title, duration_seconds, "
+                    "clean_title, clean_title_source) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (mbid, t.get("position") or "",
                      t.get("side"),
                      t.get("title") or "",
-                     t.get("duration_seconds")),
+                     t.get("duration_seconds"),
+                     clean,
+                     source),
                 )
             con.commit()
         except Exception:
