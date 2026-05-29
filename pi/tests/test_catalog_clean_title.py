@@ -106,3 +106,40 @@ def test_discovered_get_release_surfaces_clean_title(monkeypatch, tmp_path):
     tracks = result["tracks"]
     assert len(tracks) == 1
     assert tracks[0]["clean_title"] == "Song"
+
+
+# ── reverse-lookup surfaces matched_track_clean_title ─────────────────────────
+
+
+def _make_discogs_db_beatles(path: Path) -> None:
+    """Create a minimal Discogs DB with a Beatles release + a track with clean_title."""
+    from scripts.discogs import _db
+
+    con = sqlite3.connect(path, isolation_level=None)
+    con.executescript(_db.DDL)
+    _db._migrate_schema(con)
+    con.execute(
+        "INSERT INTO releases (id, artist, title, year) VALUES (1, 'The Beatles', 'Magical Mystery Tour', 1967)",
+    )
+    con.execute(
+        "INSERT INTO tracks (release_id, position, side, title, duration_seconds, "
+        "is_suite_parent, clean_title) VALUES (1, 'A2', 'A', 'Penny Lane (2017 Mix)', 180, 0, 'Penny Lane')",
+    )
+    con.close()
+
+
+def test_reverse_lookup_surfaces_matched_track_clean_title(monkeypatch, tmp_path):
+    """find_by_artist_title should surface matched_track_clean_title on the result."""
+    db_path = tmp_path / "discogs.sqlite"
+    _make_discogs_db_beatles(db_path)
+
+    from nowplaying.discogs import catalog
+
+    catalog.rid_to_album.cache_clear()
+    catalog.first_position_per_side.cache_clear()
+
+    monkeypatch.setattr(catalog, "DB_PATH", db_path)
+
+    rel = catalog.find_by_artist_title(artist="The Beatles", title="Penny Lane")
+    assert rel is not None
+    assert rel["matched_track_clean_title"] == "Penny Lane"

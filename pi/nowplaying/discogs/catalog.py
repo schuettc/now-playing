@@ -575,7 +575,7 @@ def _find_by_artist_title_primary(
             rows = con.execute(
                 """
                 SELECT releases.id AS release_id, releases.artist, releases.title AS album, releases.year, releases.format,
-                       tracks.position, tracks.title AS track_title
+                       tracks.position, tracks.title AS track_title, tracks.clean_title AS track_clean_title
                 FROM tracks JOIN releases ON tracks.release_id = releases.id
                 WHERE LOWER(releases.artist) LIKE ?
                 """,
@@ -612,6 +612,7 @@ def _find_by_artist_title_primary(
     full["match_score"] = best[0]
     full["matched_track_position"] = best[3]["position"]
     full["matched_track_title"] = best[3]["track_title"]
+    full["matched_track_clean_title"] = best[3]["track_clean_title"]
     alternates = _collect_alternates(scored, best[1], best[3]["release_id"])
     if alternates:
         full["alternate_releases"] = alternates
