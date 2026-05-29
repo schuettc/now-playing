@@ -46,6 +46,11 @@ from nowplaying.llm.track_change import (
     _build_track_change_prompt,
     _parse_track_change,
 )
+from nowplaying.llm.title_clean import (
+    CleanTitle,
+    _CLEAN_TITLE_TOOL_SPEC,
+    _build_clean_title_prompt,
+)
 from nowplaying.llm.track_guess import (
     _TRACK_GUESS_TOOL_SPEC,
     _build_track_guess_prompt,
@@ -290,6 +295,25 @@ class LLMAssist:
             prompt,
             _parse_track_change,
             tool_spec=_TRACK_CHANGE_TOOL_SPEC,
+        )
+
+    async def clean_track_title(self, raw_title: str) -> Any:
+        """Return the canonical track title (strip remaster/mix/year/edition
+        annotations; keep performance variants). Used off the recognition
+        hot path by the catalog title-cleaning passes.
+
+        Returns:
+            CleanTitle(clean_title) on success.
+            USE_HEURISTIC when LLM disabled or any error path triggers.
+        """
+        if not self.enabled:
+            return USE_HEURISTIC
+        prompt = _build_clean_title_prompt(raw_title)
+        return await self._invoke(
+            "clean_track_title",
+            prompt,
+            CleanTitle,
+            tool_spec=_CLEAN_TITLE_TOOL_SPEC,
         )
 
     # ── Internal plumbing ───────────────────────────────────────────────

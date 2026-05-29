@@ -50,6 +50,11 @@ from nowplaying.llm.shazam import (
     _SHAZAM_TOOL_SPEC,
     _build_shazam_prompt,
 )
+from nowplaying.llm.title_clean import (
+    CleanTitle,
+    _CLEAN_TITLE_TOOL_SPEC,
+    _build_clean_title_prompt,
+)
 from nowplaying.llm.track_change import (
     TrackChangeVerdict,
     _TRACK_CHANGE_TOOL_SPEC,
@@ -66,6 +71,7 @@ from nowplaying.llm.track_guess import (
 __all__ = [
     "AdvanceVerdict",
     "CACHE_TTL_S",
+    "CleanTitle",
     "ERROR_WARN_INTERVAL_S",
     "LLMAssist",
     "MODEL_ID",
@@ -77,11 +83,13 @@ __all__ = [
     "USE_HEURISTIC",
     "log",
     "_ADVANCE_TOOL_SPEC",
+    "_CLEAN_TITLE_TOOL_SPEC",
     "_RANK_RELEASES_TOOL_SPEC",
     "_SHAZAM_TOOL_SPEC",
     "_TRACK_CHANGE_TOOL_SPEC",
     "_TRACK_GUESS_TOOL_SPEC",
     "_build_advance_prompt",
+    "_build_clean_title_prompt",
     "_build_rank_releases_prompt",
     "_build_shazam_prompt",
     "_build_track_change_prompt",
