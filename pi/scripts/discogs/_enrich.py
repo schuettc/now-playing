@@ -428,6 +428,32 @@ async def _enrich_durations_from_musicbrainz_async(
     return updated
 
 
+async def clean_release_titles(con: sqlite3.Connection, release_id: int, llm=None) -> int:
+    """Populate tracks.clean_title / clean_title_source for one release.
+    Only fills rows where clean_title IS NULL. Returns rows updated."""
+    from nowplaying.titleclean import clean_titles
+
+    rows = con.execute(
+        "SELECT position, title FROM tracks "
+        "WHERE release_id = ? AND clean_title IS NULL",
+        (release_id,),
+    ).fetchall()
+    if not rows:
+        return 0
+    cleaned = await clean_titles([(t or "") for _pos, t in rows], llm)
+    updated = 0
+    for position, title in rows:
+        clean, source = cleaned[title or ""]
+        cur = con.execute(
+            "UPDATE tracks SET clean_title = ?, clean_title_source = ? "
+            "WHERE release_id = ? AND position = ?",
+            (clean, source, release_id, position),
+        )
+        updated += cur.rowcount
+    con.commit()
+    return updated
+
+
 def _maybe_enrich_durations(
     con: sqlite3.Connection,
     release_id: int,

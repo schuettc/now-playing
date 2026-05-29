@@ -60,7 +60,7 @@ async def clean_title(raw: str, llm: Any | None) -> tuple[str, str]:
     return clean_title_regex(raw), "regex"
 
 
-async def clean_titles(raws: list[str], llm: Any | None) -> dict[str, tuple[str, str]]:  # skylos: ignore — consumed by population passes (Tasks 10-12)
+async def clean_titles(raws: list[str], llm: Any | None) -> dict[str, tuple[str, str]]:
     """Clean a batch of raw titles. Deduplicates identical inputs."""
     out: dict[str, tuple[str, str]] = {}
     for raw in raws:
