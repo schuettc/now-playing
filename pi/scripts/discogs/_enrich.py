@@ -326,7 +326,7 @@ async def _apply_recording_level_fallback(
     from nowplaying import coverart  # noqa: E402
 
     remaining = con.execute(
-        "SELECT position, title FROM tracks "
+        "SELECT position, title, clean_title FROM tracks "
         "WHERE release_id = ? AND duration_seconds IS NULL "
         "ORDER BY rowid",
         (release_id,),
@@ -338,8 +338,8 @@ async def _apply_recording_level_fallback(
         recording_cache if recording_cache is not None else {}
     )
     updated = 0
-    for d_pos, d_title in remaining:
-        rec_mbid = mb_by_title_rec.get(_norm_title(d_title or ""))
+    for d_pos, d_title, d_clean in remaining:
+        rec_mbid = mb_by_title_rec.get(_norm_title(d_clean or d_title or ""))
         if not rec_mbid or rec_mbid is _AMBIGUOUS_TITLE:
             continue
         # Narrow type for the static checker.

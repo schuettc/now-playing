@@ -106,3 +106,66 @@ def test_duration_match_uses_clean_title():
     n = _enrich._fill_null_durations_by_title(con, 1, discogs_tracks, mb_by_title)
     assert n == 1
     assert con.execute("SELECT duration_seconds FROM tracks WHERE position='A2'").fetchone()[0] == 163
+
+
+def test_recording_level_fallback_uses_clean_title():
+    """_apply_recording_level_fallback must match on clean_title when the
+    raw title has annotations like '(2017 Mix)' that don't appear in the
+    MusicBrainz recording map keyed by the canonical clean title."""
+    import asyncio
+    import sqlite3
+    from scripts.discogs import _enrich
+
+    # Build an in-memory DB with the tracks table that _apply_recording_level_fallback
+    # queries directly (SELECT position, title, clean_title FROM tracks WHERE ...).
+    con = sqlite3.connect(":memory:", isolation_level=None)
+    con.execute(
+        "CREATE TABLE tracks ("
+        "  release_id INTEGER NOT NULL, "
+        "  position TEXT, "
+        "  title TEXT, "
+        "  duration_seconds INTEGER, "
+        "  clean_title TEXT, "
+        "  PRIMARY KEY (release_id, position)"
+        ")"
+    )
+    con.execute(
+        "INSERT INTO tracks (release_id, position, title, duration_seconds, clean_title) "
+        "VALUES (1, 'A2', 'Penny Lane (2017 Mix)', NULL, 'Penny Lane')"
+    )
+
+    # Recording-MBID map keyed by the normalized CLEAN title — as MusicBrainz
+    # catalogs it — not the annotated raw title.
+    mb_by_title_rec = {_enrich._norm_title("Penny Lane"): "rec-penny-lane-mbid"}
+
+    async def _fake_recording_duration(mbid, **kw):
+        return {"rec-penny-lane-mbid": 163}.get(mbid)
+
+    async def _noop(*a, **kw):
+        return None
+
+    from unittest.mock import patch
+
+    with patch(
+        "nowplaying.coverart.fetch_recording_duration",
+        side_effect=_fake_recording_duration,
+    ), patch(
+        "scripts.discogs._enrich.asyncio.sleep",
+        side_effect=_noop,
+    ):
+        updated = asyncio.run(
+            _enrich._apply_recording_level_fallback(
+                con,
+                release_id=1,
+                mb_by_title_rec=mb_by_title_rec,
+                recording_cache=None,
+            )
+        )
+
+    assert updated == 1, (
+        "recording-level fallback must match on clean_title, not raw annotated title"
+    )
+    dur = con.execute(
+        "SELECT duration_seconds FROM tracks WHERE release_id=1 AND position='A2'"
+    ).fetchone()[0]
+    assert dur == 163
