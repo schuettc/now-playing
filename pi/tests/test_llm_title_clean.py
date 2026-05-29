@@ -31,6 +31,11 @@ def test_prompt_includes_raw_and_rules():
     p = _build_clean_title_prompt("Penny Lane (2017 Mix)")
     assert "Penny Lane (2017 Mix)" in p
     assert "Live" in p
+    # Few-shot examples must be present so Haiku sees the exact failure cases.
+    assert "-> 'Penny Lane'" in p
+    assert "Strawberry Fields Forever" in p
+    assert "I Am The Walrus" in p
+    assert "Revolution (2025 Mix)" in p
 
 
 def test_disabled_returns_heuristic():
