@@ -16,6 +16,7 @@ if str(_PI_ROOT) not in sys.path:
 from nowplaying.history.scrobble import (  # noqa: E402
     SCROBBLE_MIN_DURATION_S,
     SCROBBLE_MIN_ELAPSED_S,
+    SCROBBLE_UNKNOWN_DURATION_MIN_S,
     _should_scrobble,
 )
 
@@ -48,30 +49,42 @@ def test_known_long_duration_239s_elapsed_not_eligible() -> None:
     assert _should_scrobble(elapsed=239, duration=600) is False
 
 
-# ── Unknown duration: 240s leg only (the live-bug regression) ──────────
+# ── Unknown duration: 120s threshold (loosened from 240s) ──────────────
+
+
+def test_unknown_duration_120s_elapsed_eligible() -> None:
+    """Boundary: exactly 120s heard with unknown duration — eligible."""
+    assert _should_scrobble(elapsed=120, duration=0) is True
+
+
+def test_unknown_duration_119s_elapsed_not_eligible() -> None:
+    """One second short of the 120s unknown-duration threshold — not eligible."""
+    assert _should_scrobble(elapsed=119, duration=0) is False
 
 
 def test_unknown_duration_240s_elapsed_eligible() -> None:
-    """The bug: track without duration metadata, ≥240s heard. Should scrobble."""
+    """Well above the 120s threshold; still eligible."""
     assert _should_scrobble(elapsed=240, duration=0) is True
 
 
-def test_unknown_duration_just_under_240s_not_eligible() -> None:
-    assert _should_scrobble(elapsed=239, duration=0) is False
+def test_unknown_duration_239s_now_eligible() -> None:
+    """239s with unknown duration is above the 120s threshold — eligible.
+    (Previously required 240s; updated to reflect 120s fallback.)"""
+    assert _should_scrobble(elapsed=239, duration=0) is True
 
 
 def test_unknown_duration_negative_treated_as_unknown() -> None:
     """Defensive: a stray negative duration acts like missing data."""
-    assert _should_scrobble(elapsed=SCROBBLE_MIN_ELAPSED_S, duration=-1) is True
-    assert _should_scrobble(elapsed=SCROBBLE_MIN_ELAPSED_S - 1, duration=-1) is False
+    assert _should_scrobble(elapsed=SCROBBLE_UNKNOWN_DURATION_MIN_S, duration=-1) is True
+    assert _should_scrobble(elapsed=SCROBBLE_UNKNOWN_DURATION_MIN_S - 1, duration=-1) is False
 
 
 def test_unknown_duration_with_50_percent_alone_does_not_match() -> None:
-    """The 50% rule needs duration. Without it, only the ≥240s rule applies —
+    """The 50% rule needs duration. Without it, only the ≥120s rule applies —
     even if elapsed > 50% of some implied duration."""
-    # 100s elapsed with unknown duration: would be 50% of a 200s track if
-    # duration were known, but we don't know it, so we must wait for 240s.
-    assert _should_scrobble(elapsed=100, duration=0) is False
+    # 60s elapsed with unknown duration: would be 50% of a 120s track if
+    # duration were known, but we don't know it, so we must wait for 120s.
+    assert _should_scrobble(elapsed=60, duration=0) is False
 
 
 # ── Boundary constants ─────────────────────────────────────────────────

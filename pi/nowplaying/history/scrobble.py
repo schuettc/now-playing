@@ -15,6 +15,13 @@ log = logging.getLogger("nowplaying.history")
 SCROBBLE_MIN_DURATION_S = 30
 SCROBBLE_MIN_ELAPSED_S = 240
 
+# No per-track duration available (Discogs blank + MusicBrainz unmatched):
+# can't compute the 50% leg, and requiring 240s makes sub-4-minute tracks
+# impossible to scrobble. Heartbeats are silence-gated, so `elapsed` is real
+# audible playtime — 120s is a substantial, genuine listen (4x the Last.fm
+# 30s floor) and well within the client-convention's intent.
+SCROBBLE_UNKNOWN_DURATION_MIN_S = 120
+
 # Track which play_history row ids have already been scrobbled so coalesced
 # heartbeats don't double-submit. Bounded FIFO eviction to avoid unbounded
 # growth on long-running orchestrators.
@@ -76,13 +83,13 @@ def _should_scrobble(elapsed: int, duration: int) -> bool:
 
     When ``duration`` is unknown (Discogs catalog row without per-track
     duration, and MusicBrainz enrichment hasn't run on it yet), fall back
-    to the ≥240s elapsed leg only — same spirit as Last.fm's own rule
-    where "50% played OR 240s" is satisfied by either side independently.
-    Without this fallback, tracks on duration-less releases never
-    scrobble even though the listener clearly heard them.
+    to the ≥120s elapsed leg — heartbeats are silence-gated so ``elapsed``
+    is real audible playtime; 120s is 4× the Last.fm 30s floor and within
+    the client-convention's intent without requiring the impossible 240s
+    threshold for sub-4-minute tracks.
     """
     if duration <= 0:
-        return elapsed >= SCROBBLE_MIN_ELAPSED_S
+        return elapsed >= SCROBBLE_UNKNOWN_DURATION_MIN_S
     if duration < SCROBBLE_MIN_DURATION_S:
         return False
     if elapsed < SCROBBLE_MIN_ELAPSED_S and elapsed < (duration // 2):
