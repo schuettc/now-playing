@@ -383,4 +383,12 @@ def to_now_playing_vinyl(result: dict[str, Any]) -> dict[str, Any]:
         payload["albumadamid"] = result.get("albumadamid")
     if payload["track_position"]:
         payload["side"] = payload["track_position"][:1]
+    # Thread the matched track's duration so the Last.fm scrobble path can
+    # apply the 50%-of-duration rule. Without it _should_scrobble falls back
+    # to the >=240s leg and sub-4-minute tracks never scrobble.
+    for tr in (result.get("tracklist") or []):
+        if (tr.get("position") or tr.get("track_position")) == payload["track_position"]:
+            if tr.get("duration_seconds") is not None:
+                payload["duration_seconds"] = tr["duration_seconds"]
+            break
     return payload

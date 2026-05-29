@@ -230,6 +230,33 @@ def test_build_payload_normal():
     assert payload["side"] == "D"
 
 
+def test_build_payload_threads_predicted_track_duration():
+    """The predicted track's own duration_seconds (from the catalog lookup)
+    must land on the payload — not None and not the previous track's. The
+    scrobble path needs it to apply the 50%-of-duration rule."""
+    predicted = {
+        "release_id": 31427573,
+        "side": "D",
+        "track_position": "D17",
+        "index_in_side": 2,
+    }
+    tracks = [
+        {"position": "D16", "side": "D", "title": "Heliotropic", "duration_seconds": 200},
+        {"position": "D17", "side": "D", "title": "Daylight", "duration_seconds": 251},
+    ]
+    with patch.object(
+        nowplaying_main.discogs_catalog,
+        "get_release",
+        return_value=_release_doc(tracks=tracks),
+    ):
+        payload = nowplaying_main._build_predicted_payload(
+            LAST_VINYL_LOCK, predicted, source="vinyl"
+        )
+    assert payload is not None
+    assert payload["track_position"] == "D17"
+    assert payload["duration_seconds"] == 251
+
+
 def test_build_payload_missing_release_returns_none():
     """Catalog miss (deleted release / corrupt DB) returns None."""
     predicted = {

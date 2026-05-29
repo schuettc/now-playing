@@ -161,6 +161,35 @@ def test_fallback_hit_falls_back_to_previous_title_if_tracklist_missing(
     assert published["title"] == "Heart and Soul"
 
 
+# ── _build_fingerprint_payload duration threading ───────────────────────
+
+
+def test_build_fingerprint_payload_threads_matched_duration():
+    """The F3 overlay must set the MATCHED track's duration_seconds, not
+    inherit the locked payload's stale (previous-track) duration. The
+    builder copies locked_payload (carrying the prior track's duration) and
+    swaps in a new track_position — so it must overwrite duration too, or
+    the scrobble path uses the wrong track's length."""
+    from nowplaying.orchestrator.fingerprint import _build_fingerprint_payload
+    locked_payload = {
+        "release_id": 12345,
+        "artist": "Green Day",
+        "album": "American Idiot",
+        "track_position": "A1",
+        "title": "American Idiot",
+        "duration_seconds": 174,  # stale: belongs to A1, the previous track
+        "tracklist": [
+            {"position": "A1", "title": "American Idiot", "duration_seconds": 174},
+            {"position": "A5", "title": "Are We The Waiting", "duration_seconds": 162},
+        ],
+    }
+    top = Hit(ref_id=1, release_id=12345, track_position="A5", hits=80, track_position_s=0.0)
+    payload = _build_fingerprint_payload(locked_payload, top, "vinyl")
+    assert payload["track_position"] == "A5"
+    assert payload["title"] == "Are We The Waiting"
+    assert payload["duration_seconds"] == 162  # matched track, not stale 174
+
+
 # ── Confidence gates (threshold + margin) ───────────────────────────────
 
 

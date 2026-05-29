@@ -91,5 +91,8 @@ def _build_predicted_payload(
         "title": track.get("title"),
         "track_position": track.get("position"),
         "side": track.get("side"),
+        # Predicted track's own duration (not last_vinyl's) so the Last.fm
+        # scrobble path can apply the 50%-of-duration rule.
+        "duration_seconds": track.get("duration_seconds"),
     }
     return payload

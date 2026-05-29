@@ -81,6 +81,47 @@ def test_discogs_hit_path_uses_art_url_for_release(monkeypatch):
     assert payload["art_url"] == "/art/42.jpg"
 
 
+def test_payload_threads_duration_seconds_from_matched_track(monkeypatch):
+    """The matched track's duration_seconds must land on the payload so the
+    Last.fm scrobble path can apply the 50%-of-duration rule. Without it,
+    _should_scrobble takes the duration<=0 fallback and only tracks played
+    >=240s ever scrobble — sub-4-minute tracks silently drop (observed live
+    on a full American Idiot side, 2026-05-29)."""
+    from nowplaying.vinyl import runtime as runtime_mod
+    from nowplaying.orchestrator import _publish_enrichment
+    monkeypatch.setattr(
+        _publish_enrichment, "_art_url_for_release",
+        lambda rid: f"/art/{rid}.jpg",
+    )
+    payload = runtime_mod.to_now_playing_vinyl({
+        "ts": "2026-05-29T00:00:00",
+        "title": "Are We The Waiting",
+        "artist": "Green Day",
+        "album": "American Idiot",
+        "release_id": 12345,
+        "track_position": "B2",
+        "match_method": "shazam",
+        "tracklist": [
+            {"position": "B1", "side": "B", "title": "Boulevard Of Broken Dreams", "duration_seconds": 260},
+            {"position": "B2", "side": "B", "title": "Are We The Waiting", "duration_seconds": 162},
+            {"position": "B3", "side": "B", "title": "St. Jimmy", "duration_seconds": 175},
+        ],
+    })
+    assert payload["duration_seconds"] == 162
+
+
+def test_payload_omits_duration_when_tracklist_lacks_it(monkeypatch):
+    """Shazam-only with no catalog tracklist → no duration_seconds key
+    (payload-convention: omit None). The 240s scrobble fallback applies."""
+    from nowplaying.vinyl import runtime as runtime_mod
+    payload = runtime_mod.to_now_playing_vinyl({
+        "ts": "2026-05-29T00:00:00",
+        "title": "x", "artist": "y", "album": "z",
+        "release_id": None, "match_method": "shazam", "tracklist": None,
+    })
+    assert "duration_seconds" not in payload
+
+
 def test_payload_propagates_release_mbid_on_discogs_path(monkeypatch):
     """release_mbid is independent of release_id — it can be attached
     via the discovered-release path even when Discogs also has a hit."""

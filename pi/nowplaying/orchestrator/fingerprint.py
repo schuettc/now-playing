@@ -29,6 +29,10 @@ def _build_fingerprint_payload(
     payload["match_method"] = "fingerprint"
     payload["source"] = audio_source_label
     payload["ts"] = recognize_proto.now_iso()
+    # The copied payload carries the PREVIOUS track's duration; drop it so the
+    # scrobble path doesn't score this track against the wrong length, then
+    # set the matched track's duration below.
+    payload.pop("duration_seconds", None)
     for tr in (payload.get("tracklist") or []):
         # Tracklist entries built by the blind path use the "position" key;
         # entries built by the confirmation overlay or pin path use
@@ -39,6 +43,8 @@ def _build_fingerprint_payload(
         if tr_pos == top.track_position:
             if tr.get("title"):
                 payload["title"] = tr["title"]
+            if tr.get("duration_seconds") is not None:
+                payload["duration_seconds"] = tr["duration_seconds"]
             break
     return payload
 
