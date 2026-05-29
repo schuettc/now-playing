@@ -11,7 +11,18 @@ import asyncio
 import sqlite3
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from nowplaying.titleclean import clean_title as _clean
+
+
+def _load_env(env_path: Path | None = None) -> None:
+    """Load pi/.env so ANTHROPIC_API_KEY is visible to LLMAssist when run
+    as a standalone CLI (the long-running orchestrator loads it at startup;
+    this script must do it explicitly)."""
+    if env_path is None:
+        env_path = Path(__file__).resolve().parents[1] / ".env"  # pi/.env
+    load_dotenv(env_path)
 
 
 async def backfill_db(db_path: Path, llm=None, reclean_regex: bool = False) -> int:
@@ -35,6 +46,7 @@ async def backfill_db(db_path: Path, llm=None, reclean_regex: bool = False) -> i
 
 
 def main() -> None:
+    _load_env()
     ap = argparse.ArgumentParser()
     ap.add_argument("--discogs", type=Path, default=Path("pi/data/discogs.sqlite"))
     ap.add_argument("--discovered", type=Path, default=Path("pi/data/discovered.sqlite"))
