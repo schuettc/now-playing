@@ -91,3 +91,18 @@ def test_clean_release_titles_returns_updated_count(tmp_path):
 
     updated = asyncio.run(_enrich.clean_release_titles(con, release_id=1, llm=None))
     assert updated == 2
+
+
+def test_duration_match_uses_clean_title():
+    from scripts.discogs import _enrich
+    import sqlite3
+    mb_by_title = {_enrich._norm_title("Penny Lane"): 163}
+    # discogs row: raw title annotated, clean_title canonical, duration NULL
+    discogs_tracks = [("A2", "Penny Lane (2017 Mix)", None, "Penny Lane")]
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE tracks (release_id INT, position TEXT, title TEXT, duration_seconds INT, clean_title TEXT)")
+    con.execute("INSERT INTO tracks VALUES (1,'A2','Penny Lane (2017 Mix)',NULL,'Penny Lane')")
+    con.commit()
+    n = _enrich._fill_null_durations_by_title(con, 1, discogs_tracks, mb_by_title)
+    assert n == 1
+    assert con.execute("SELECT duration_seconds FROM tracks WHERE position='A2'").fetchone()[0] == 163

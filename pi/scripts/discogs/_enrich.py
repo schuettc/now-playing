@@ -291,10 +291,10 @@ def _fill_null_durations_by_title(
     Returns the count of rows updated.
     """
     updated = 0
-    for d_pos, d_title, d_dur in discogs_tracks:
+    for d_pos, d_title, d_dur, d_clean in discogs_tracks:
         if d_dur is not None:
             continue  # never overwrite an existing Discogs duration
-        mb_dur = mb_by_title.get(_norm_title(d_title or ""))
+        mb_dur = mb_by_title.get(_norm_title(d_clean or d_title or ""))
         if mb_dur is None or mb_dur is _AMBIGUOUS_TITLE:
             continue
         cur = con.execute(
@@ -405,7 +405,7 @@ async def _enrich_durations_from_musicbrainz_async(
         return 0
 
     discogs_tracks = con.execute(
-        "SELECT position, title, duration_seconds FROM tracks "
+        "SELECT position, title, duration_seconds, clean_title FROM tracks "
         "WHERE release_id = ? ORDER BY rowid",
         (release_id,),
     ).fetchall()
