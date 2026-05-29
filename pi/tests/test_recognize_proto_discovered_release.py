@@ -195,7 +195,7 @@ def test_run_discovery_persists_on_isrc_hit(monkeypatch):
             "year": 2000, "tracks": [],
         }
 
-    async def _fake_persist(rel, *, llm=None):
+    async def _fake_persist(rel):
         persisted.append(rel)
 
     monkeypatch.setattr(
@@ -230,7 +230,7 @@ def test_run_discovery_falls_back_to_artist_album(monkeypatch):
             "album": album, "tracks": [],
         }
 
-    async def _fake_persist(rel, *, llm=None):
+    async def _fake_persist(rel):
         persisted.append(rel)
 
     monkeypatch.setattr(

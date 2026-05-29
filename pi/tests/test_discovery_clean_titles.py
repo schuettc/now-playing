@@ -56,7 +56,7 @@ def _query_tracks(db_path):
 
 
 def test_persist_cleans_title_regex_path(monkeypatch, tmp_path):
-    """persist with llm=None uses the regex cleaner.
+    """persist uses the regex cleaner.
 
     "Penny Lane (2017 Mix)" → clean_title="Penny Lane", source="regex".
     """
@@ -77,7 +77,7 @@ def test_persist_cleans_title_regex_path(monkeypatch, tmp_path):
             },
         ],
     }
-    _run(mbl.persist(release, llm=None))
+    _run(mbl.persist(release))
 
     tracks = _query_tracks(db_path)
     assert len(tracks) == 1
@@ -104,7 +104,7 @@ def test_persist_keeps_raw_title_unchanged(monkeypatch, tmp_path):
             },
         ],
     }
-    _run(mbl.persist(release, llm=None))
+    _run(mbl.persist(release))
 
     tracks = _query_tracks(db_path)
     assert tracks[0]["title"] == "Penny Lane (2017 Mix)"
@@ -129,34 +129,10 @@ def test_persist_title_without_annotation_stays_same(monkeypatch, tmp_path):
             },
         ],
     }
-    _run(mbl.persist(release, llm=None))
+    _run(mbl.persist(release))
 
     tracks = _query_tracks(db_path)
     assert tracks[0]["clean_title"] == "Here Comes the Sun"
     assert tracks[0]["clean_title_source"] == "regex"
 
 
-def test_persist_existing_callers_work_without_llm_param(monkeypatch, tmp_path):
-    """Calling persist(release) with no llm kwarg still works (backward compat)."""
-    db_path = _make_discovered_db(monkeypatch, tmp_path)
-    from nowplaying.discovery import musicbrainz_lookup as mbl
-
-    release = {
-        "mbid": "mb-compat",
-        "artist": "Neil Young",
-        "album": "Harvest",
-        "year": 1972,
-        "tracks": [
-            {
-                "position": "A1",
-                "side": "A",
-                "title": "Out On The Weekend",
-                "duration_seconds": 271,
-            },
-        ],
-    }
-    _run(mbl.persist(release))  # no llm kwarg — must not raise
-
-    tracks = _query_tracks(db_path)
-    assert tracks[0]["clean_title"] == "Out On The Weekend"
-    assert tracks[0]["clean_title_source"] == "regex"

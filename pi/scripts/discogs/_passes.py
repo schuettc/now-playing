@@ -1,7 +1,6 @@
 """Sync passes: basic collection fetch, detail + tracklist, cover art, duration backfill."""
 from __future__ import annotations
 
-import asyncio
 import json
 import sqlite3
 import time
@@ -76,9 +75,7 @@ def fetch_detail(con: sqlite3.Connection, client: discogs_client.Client, release
     # Title cleaning: strip remaster/mix annotations so clean_title holds
     # the canonical title used by Last.fm aggregation and MusicBrainz matching.
     # Runs before the duration backfill so Task 13 can match on clean_title.
-    from nowplaying.llm import LLMAssist
-    llm = LLMAssist()
-    asyncio.run(clean_release_titles(con, release_id, llm=llm))
+    clean_release_titles(con, release_id)
 
     # Duration enrichment: if Discogs left any track with a NULL duration,
     # try MusicBrainz as a fallback source. Same album, different provider.

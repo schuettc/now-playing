@@ -1,8 +1,6 @@
 """Tests for scripts.clean_titles_backfill."""
 from __future__ import annotations
 
-import asyncio
-import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -38,7 +36,7 @@ def test_backfill_null_clean_title(tmp_path):
 
     from scripts import clean_titles_backfill as bf
 
-    n = asyncio.run(bf.backfill_db(db, llm=None))
+    n = bf.backfill_db(db)
     assert n == 1
 
     con2 = sqlite3.connect(db)
@@ -65,7 +63,7 @@ def test_backfill_skips_already_cleaned(tmp_path):
 
     from scripts import clean_titles_backfill as bf
 
-    n = asyncio.run(bf.backfill_db(db, llm=None))
+    n = bf.backfill_db(db)
     assert n == 0
 
 
@@ -90,7 +88,7 @@ def test_reclean_regex_updates_regex_rows(tmp_path):
 
     from scripts import clean_titles_backfill as bf
 
-    n = asyncio.run(bf.backfill_db(db, llm=None, reclean_regex=True))
+    n = bf.backfill_db(db, reclean_regex=True)
     assert n == 1  # only the regex row updated
 
     con2 = sqlite3.connect(db)
@@ -107,14 +105,3 @@ def test_reclean_regex_updates_regex_rows(tmp_path):
     # llm row is untouched.
     assert rows["A2"][0] == "Let It Be"
     assert rows["A2"][1] == "llm"
-
-
-def test_load_env_reads_key(tmp_path, monkeypatch):
-    """_load_env populates ANTHROPIC_API_KEY from the given .env file."""
-    from scripts import clean_titles_backfill as bf
-
-    env = tmp_path / ".env"
-    env.write_text("ANTHROPIC_API_KEY=test-key-123\n")
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    bf._load_env(env)
-    assert os.environ.get("ANTHROPIC_API_KEY") == "test-key-123"

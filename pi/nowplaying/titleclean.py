@@ -4,14 +4,10 @@ Discogs ships track titles with remaster/mix annotations baked in
 (e.g. "Penny Lane (2017 Mix)"). For Last.fm aggregation and MusicBrainz
 duration-matching we want the canonical title ("Penny Lane"), while
 keeping annotations that mark a genuinely distinct recording ("(Live)").
-
-`clean_title_regex` is the always-available conservative fallback;
-`clean_title` (added later) prefers the LLM and falls back to regex.
 """
 from __future__ import annotations
 
 import re
-from typing import Any
 
 # Annotations that mark a distinct recording — never strip these.
 _KEEP = re.compile(r"\b(live|acoustic|demo|reprise|session|single version)\b", re.I)
@@ -42,29 +38,8 @@ def clean_title_regex(raw: str) -> str:
     return out.strip() or raw
 
 
-async def clean_title(raw: str, llm: Any | None) -> tuple[str, str]:
-    """Return (clean_title, source). Prefer the LLM when available; fall
-    back to the regex on disabled / USE_HEURISTIC / error. `source` is
-    'llm' or 'regex'."""
-    if llm is not None and getattr(llm, "enabled", False):
-        from nowplaying.llm import USE_HEURISTIC
-        try:
-            verdict = await llm.clean_track_title(raw)
-        except Exception:
-            verdict = USE_HEURISTIC
-        if verdict is not USE_HEURISTIC:
-            clean = getattr(verdict, "clean_title", "") or ""
-            clean = clean.strip()
-            if clean:
-                return clean, "llm"
+def clean_title(raw: str) -> tuple[str, str]:
+    """Return (clean_title, 'regex'). Regex is the cleaner — an LLM
+    experiment (Haiku) proved unreliable at stripping mix/year tags, so
+    the conservative keyword regex is authoritative."""
     return clean_title_regex(raw), "regex"
-
-
-async def clean_titles(raws: list[str], llm: Any | None) -> dict[str, tuple[str, str]]:
-    """Clean a batch of raw titles. Deduplicates identical inputs."""
-    out: dict[str, tuple[str, str]] = {}
-    for raw in raws:
-        if raw in out:
-            continue
-        out[raw] = await clean_title(raw, llm)
-    return out

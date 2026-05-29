@@ -332,14 +332,10 @@ async def _resolve_artist_album_mbid(
 # ── Persistence ────────────────────────────────────────────────────────
 
 
-async def persist(release: dict, *, llm=None) -> None:
+async def persist(release: dict) -> None:
     """Write a release + tracks into discovered.sqlite. Idempotent:
     re-running with the same MBID replaces the release row and rewrites
     its tracks.
-
-    ``llm`` is forwarded to the title-cleaner; pass ``self.llm`` from the
-    orchestrator discovery task for LLM-assisted cleaning, or omit / pass
-    ``None`` to use the regex fallback only.
     """
     mbid = release.get("mbid")
     if not mbid:
@@ -349,8 +345,7 @@ async def persist(release: dict, *, llm=None) -> None:
     cleaned: list[tuple[str, str]] = []
     for t in tracks:
         raw = t.get("title") or ""
-        clean, source = await _clean_title(raw, llm)
-        cleaned.append((clean, source))
+        cleaned.append(_clean_title(raw))
     await asyncio.to_thread(_persist_sync, release, cleaned)
 
 

@@ -1,7 +1,6 @@
 """Tests for clean_release_titles in scripts.discogs._enrich."""
 from __future__ import annotations
 
-import asyncio
 import sqlite3
 import sys
 from pathlib import Path
@@ -36,7 +35,7 @@ def test_clean_release_titles_populates_column(tmp_path):
 
     from scripts.discogs import _enrich
 
-    asyncio.run(_enrich.clean_release_titles(con, release_id=1, llm=None))
+    _enrich.clean_release_titles(con, release_id=1)
 
     row = con.execute(
         "SELECT clean_title, clean_title_source FROM tracks "
@@ -61,7 +60,7 @@ def test_clean_release_titles_skips_already_populated(tmp_path):
 
     from scripts.discogs import _enrich
 
-    updated = asyncio.run(_enrich.clean_release_titles(con, release_id=1, llm=None))
+    updated = _enrich.clean_release_titles(con, release_id=1)
     assert updated == 0
 
     row = con.execute(
@@ -89,7 +88,7 @@ def test_clean_release_titles_returns_updated_count(tmp_path):
 
     from scripts.discogs import _enrich
 
-    updated = asyncio.run(_enrich.clean_release_titles(con, release_id=1, llm=None))
+    updated = _enrich.clean_release_titles(con, release_id=1)
     assert updated == 2
 
 

@@ -37,24 +37,6 @@ logger = logging.getLogger(__name__)
 PI_DIR = REPO_ROOT / "pi"
 DATA_DIR = PI_DIR / "data"
 
-_DISCOVERY_LLM = None
-
-
-def _discovery_llm():
-    """Return a module-level LLMAssist, constructed lazily.
-
-    LLMAssist reads ANTHROPIC_API_KEY at construction and self-disables
-    (regex path) when the key is absent — so this is always safe to call.
-    Lazy construction avoids import-time cost and keeps module load order
-    unaffected.
-    """
-    global _DISCOVERY_LLM  # noqa: PLW0603 — intentional module-level cache
-    if _DISCOVERY_LLM is None:
-        from nowplaying.llm import LLMAssist
-        _DISCOVERY_LLM = LLMAssist()
-    return _DISCOVERY_LLM
-
-
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -297,7 +279,7 @@ async def _run_discovery(
                 file=sys.stderr,
             )
             return
-        await musicbrainz_lookup.persist(release, llm=_discovery_llm())
+        await musicbrainz_lookup.persist(release)
         print(  # noqa: T201
             f"discovery: discovered release "
             f"mbid={release.get('mbid')} "
