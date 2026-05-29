@@ -74,6 +74,7 @@ def init_db(db_path: Path = DISCOVERED_DB_PATH) -> None:
         con.execute("PRAGMA foreign_keys=ON")
         con.executescript(_SCHEMA_SQL)
         _migrate_normalized_album(con)
+        _migrate_clean_title(con)
         con.commit()
 
 
@@ -92,6 +93,15 @@ def _migrate_normalized_album(con: sqlite3.Connection) -> None:
         "UPDATE releases SET normalized_album = LOWER(TRIM(title)) "
         "WHERE normalized_album IS NULL AND title IS NOT NULL",
     )
+
+
+def _migrate_clean_title(con: sqlite3.Connection) -> None:
+    """Add tracks.clean_title + clean_title_source when absent. Idempotent."""
+    cols = {row[1] for row in con.execute("PRAGMA table_info(tracks)")}
+    if "clean_title" not in cols:
+        con.execute("ALTER TABLE tracks ADD COLUMN clean_title TEXT")
+    if "clean_title_source" not in cols:
+        con.execute("ALTER TABLE tracks ADD COLUMN clean_title_source TEXT")
 
 
 def open_ro(db_path: Path = DISCOVERED_DB_PATH) -> sqlite3.Connection:
