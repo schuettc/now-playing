@@ -91,6 +91,8 @@ def _migrate_schema(con: sqlite3.Connection) -> None:
     for stmt in (
         "ALTER TABLE releases ADD COLUMN musicbrainz_mbid TEXT",
         "ALTER TABLE tracks ADD COLUMN is_suite_parent INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE tracks ADD COLUMN clean_title TEXT",
+        "ALTER TABLE tracks ADD COLUMN clean_title_source TEXT",
     ):
         try:
             con.execute(stmt)
