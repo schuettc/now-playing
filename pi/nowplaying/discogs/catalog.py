@@ -193,7 +193,7 @@ def get_release(release_id: int) -> Optional[dict]:
             out["tracks"] = [
                 dict(t)
                 for t in con.execute(
-                    "SELECT position, side, title, duration_seconds "
+                    "SELECT position, side, title, duration_seconds, clean_title "
                     "FROM tracks WHERE release_id = ? AND is_suite_parent = 0 "
                     "ORDER BY position",
                     (release_id,),
