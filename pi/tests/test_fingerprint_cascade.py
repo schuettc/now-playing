@@ -724,3 +724,33 @@ def test_confirmation_no_anchor_uses_overlay_path_with_correct_title(
         "Title must be looked up from tracklist using either 'position' or "
         "'track_position' key — was the dual-key fix applied to _build_fingerprint_payload?"
     )
+
+
+# ── clean_title preference (display/scrobble) ────────────────────────────
+
+
+def test_build_fingerprint_payload_prefers_clean_title():
+    from nowplaying.orchestrator.fingerprint import _build_fingerprint_payload
+    locked_payload = {
+        "release_id": 1, "artist": "The Beatles", "album": "Blue",
+        "track_position": "A1", "title": "x",
+        "tracklist": [
+            {"position": "A2", "title": "Penny Lane (2017 Mix)",
+             "clean_title": "Penny Lane", "duration_seconds": 163},
+        ],
+    }
+    top = Hit(ref_id=1, release_id=1, track_position="A2", hits=80, track_position_s=0.0)
+    payload = _build_fingerprint_payload(locked_payload, top, "vinyl")
+    assert payload["title"] == "Penny Lane"
+    assert payload["duration_seconds"] == 163
+
+
+def test_build_fingerprint_payload_falls_back_to_raw_when_no_clean():
+    from nowplaying.orchestrator.fingerprint import _build_fingerprint_payload
+    locked_payload = {
+        "release_id": 1, "track_position": "A1", "title": "x",
+        "tracklist": [{"position": "A2", "title": "Bury Me", "duration_seconds": 200}],
+    }
+    top = Hit(ref_id=1, release_id=1, track_position="A2", hits=80, track_position_s=0.0)
+    payload = _build_fingerprint_payload(locked_payload, top, "vinyl")
+    assert payload["title"] == "Bury Me"
