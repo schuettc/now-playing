@@ -71,9 +71,10 @@ def _fetch_release_tracks(con, rid: int) -> list[dict]:
             "side": t["side"],
             "title": t["title"],
             "duration_seconds": t["duration_seconds"],
+            "clean_title": t["clean_title"],
         }
         for t in con.execute(
-            "SELECT position, side, title, duration_seconds FROM tracks WHERE release_id = ? ORDER BY position",
+            "SELECT position, side, title, duration_seconds, clean_title FROM tracks WHERE release_id = ? ORDER BY position",
             (rid,),
         )
     ]
