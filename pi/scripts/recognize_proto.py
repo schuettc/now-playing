@@ -123,6 +123,7 @@ async def recognize(  # skylos: ignore — prototype recognizer; production casc
                     rel.get("title") or "",
                 )
             )
+            _schedule_isrc_duration(base)
             return base
         # Shazam-only branch: Discogs missed. Surface the Shazam-derived
         # album / cover art so the kiosk can render more than just
@@ -150,6 +151,81 @@ async def recognize(  # skylos: ignore — prototype recognizer; production casc
 # In-flight discovery tasks keyed on (artist_norm, album_norm). Prevents
 # two heartbeats ~15s apart firing duplicate MB lookups for the same album.
 _in_flight_discovery: dict[tuple[str, str], asyncio.Task] = {}
+
+# ---------------------------------------------------------------------------
+# ISRC → track duration enrichment (fire-and-forget)
+# ---------------------------------------------------------------------------
+
+# ISRCs for which MB returned no length — skip on repeat heartbeats.
+_isrc_no_duration: set[str] = set()
+# In-flight duration tasks keyed on (release_id_or_mbid, position).
+_in_flight_isrc_dur: dict[tuple, asyncio.Task] = {}
+
+
+def _matched_track_duration(result: dict):
+    """Return the duration_seconds of the matched track, or None."""
+    pos = result.get("track_position")
+    for tr in (result.get("tracklist") or []):
+        if (tr.get("position") or tr.get("track_position")) == pos:
+            return tr.get("duration_seconds")
+    return None
+
+
+def _set_discogs_duration(release_id, position, secs) -> int:
+    from nowplaying.discogs.catalog import set_track_duration
+    return set_track_duration(release_id, position, secs)
+
+
+def _set_discovered_duration(mbid, position, secs) -> int:
+    from nowplaying.discovery import set_track_duration_mbid
+    return set_track_duration_mbid(mbid, position, secs)
+
+
+def _schedule_isrc_duration(result: dict) -> None:
+    """Fire-and-forget: fill the recognized track's duration from its ISRC
+    when the catalog has none. No-op unless ISRC present, matched-track
+    duration is NULL, and a write key exists."""
+    isrc = (result.get("isrc") or "").strip()
+    if not isrc or isrc in _isrc_no_duration:
+        return
+    if _matched_track_duration(result) is not None:
+        return
+    pos = result.get("track_position")
+    if not pos:
+        return
+    release_id = result.get("release_id")
+    mbid = result.get("release_mbid")
+    if release_id is None and not mbid:
+        return
+    key = (release_id or mbid, pos)
+    existing = _in_flight_isrc_dur.get(key)
+    if existing and not existing.done():
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    _in_flight_isrc_dur[key] = loop.create_task(
+        _run_isrc_duration(isrc, release_id=release_id, mbid=mbid, position=pos)
+    )
+
+
+async def _run_isrc_duration(isrc: str, *, release_id, mbid, position: str) -> None:
+    """Drive the ISRC → duration fill: fetch length from MB, write to catalog."""
+    try:
+        secs = await musicbrainz_lookup.recording_length_by_isrc(isrc)
+        if not secs:
+            _isrc_no_duration.add(isrc)
+            return
+        n = (_set_discogs_duration(release_id, position, secs)
+             if release_id is not None
+             else _set_discovered_duration(mbid, position, secs))
+        if n:
+            print(f"isrc-duration: filled isrc={isrc} pos={position} -> {secs}s", file=sys.stderr)  # noqa: T201
+    except Exception as e:  # noqa: BLE001 — background task: log + swallow
+        print(f"isrc-duration: {e!r} for isrc={isrc}", file=sys.stderr)  # noqa: T201
+    finally:
+        _in_flight_isrc_dur.pop((release_id or mbid, position), None)
 
 
 def _attach_discovered_or_schedule(
@@ -186,6 +262,7 @@ def _attach_discovered_or_schedule(
                 for t in tracks
             ]
             _resolve_track_position(base, tracks, shazam_track_title, mbid)
+            _schedule_isrc_duration(base)
             return
     _schedule_discovery(sh)
 
