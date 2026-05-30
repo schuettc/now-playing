@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import calendar
 import dataclasses
 import time
 
@@ -164,6 +165,48 @@ def _find_pin_track(tracklist: list[dict], target: str) -> dict | None:
     return None
 
 
+def _prior_track_end_iso(
+    prior_started_at_iso: str | None,
+    tracklist: list[dict] | None,
+    prior_pos: str | None,
+) -> str | None:
+    """Estimate the current track's start as the prior track's end.
+
+    On a Shazam-quiet side, predicted-advance is suppressed while the prior
+    pin is active, so when the user confirms the next track there is no
+    first-miss or prediction backdate to anchor the pin TTL. Without one, the
+    pin would use the full track duration measured from the tap and outlive
+    the real track end (the same overshoot fixed elsewhere for the first
+    track). The prior track's start (still in ``state.track_started_at``) plus
+    its full duration is when the prior track ended — i.e. when this track
+    began. See docs/features/advance-on-shazam-quiet-records/.
+
+    Returns the ISO start, or None when any input is missing or the computed
+    end isn't a plausible past backdate (in which case the caller falls back
+    to full-duration-from-tap).
+    """
+    if not prior_started_at_iso or not prior_pos:
+        return None
+    prior_track = _find_pin_track(tracklist or [], prior_pos)
+    prior_duration = prior_track.get("duration_seconds") if prior_track else None
+    if prior_duration is None:
+        return None
+    try:
+        start_unix = calendar.timegm(
+            time.strptime(prior_started_at_iso, "%Y-%m-%dT%H:%M:%SZ"),
+        )
+    except (ValueError, OverflowError):
+        return None
+    end_unix = start_unix + int(prior_duration)
+    # Only use as a backdate when the prior track has plausibly ended (end in
+    # the past). If the user confirms the next track earlier than the prior
+    # track's nominal end, durations disagree with reality — fall back rather
+    # than invent an elapsed.
+    if end_unix > time.time():
+        return None
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(end_unix))
+
+
 def _resolve_pin_tracklist(state, rid: int, pos: str) -> list[dict] | None:
     """Resolve the tracklist for a locked-album pin.
 
@@ -238,6 +281,11 @@ def _apply_pin_state(
     prior_track_started_at = (
         None if is_different_track else state.track_started_at
     )
+    # Prior track's start, captured before any branch overwrites
+    # state.track_started_at. On a Shazam-quiet side this still holds the
+    # prior track's start (predicted-advance was suppressed by the active
+    # pin), so the next track's start can be derived from it below.
+    prior_track_start = state.track_started_at
     # Capture the predicted-advance hint BEFORE it is cleared below. When the
     # pin lands on the predicted track and we have no first-miss boundary, the
     # prediction's back-dated start lets us compute an elapsed-aware TTL rather
@@ -251,6 +299,16 @@ def _apply_pin_state(
     )
     first_miss_offset = (
         _first_miss_initial_position_s(state) if is_different_track else None
+    )
+    # Chained-pin fallback: when confirming the next track on a Shazam-quiet
+    # side with no first-miss or prediction backdate, the prior track's end is
+    # when this track began.
+    chained_start = (
+        _prior_track_end_iso(
+            prior_track_start, (locked or {}).get("tracklist"), prior_pos,
+        )
+        if is_different_track
+        else None
     )
     if first_miss_offset is not None:
         state.track_started_at = time.strftime(
@@ -270,6 +328,12 @@ def _apply_pin_state(
         # backdated value already reflects reality.
         state.track_started_at = predicted_started_at
         pin_track_started_at = predicted_started_at
+    elif chained_start is not None:
+        # Next track on a quiet side: anchor the TTL to the prior track's end
+        # (when this track began) so the pin doesn't outlive it and freeze the
+        # following advance. See docs/features/advance-on-shazam-quiet-records/.
+        state.track_started_at = chained_start
+        pin_track_started_at = chained_start
     else:
         state.track_started_at = now_iso
         pin_track_started_at = prior_track_started_at
