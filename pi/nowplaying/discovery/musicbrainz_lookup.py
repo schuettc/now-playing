@@ -19,6 +19,7 @@ import asyncio
 import logging
 import time
 import urllib.parse
+from collections import Counter
 from typing import Optional
 
 import aiohttp
@@ -130,6 +131,48 @@ def _walk_media_to_tracks(media: list[dict]) -> list[dict]:
 
 
 # ── Public lookups ─────────────────────────────────────────────────────
+
+
+def _pick_recording_length(recordings: list[dict]) -> int | None:
+    """Best-effort duration (seconds) from MB recording-search results.
+    Restrict to recordings that have a length and the max MB score; among
+    those pick the most common length, tie-break shortest. None if no
+    candidate has a length."""
+    cand = [r for r in recordings if r.get("length")]
+    if not cand:
+        return None
+    top = max(int(r.get("score") or 0) for r in cand)
+    lengths = [int(r["length"]) for r in cand if int(r.get("score") or 0) == top]
+    counts = Counter(lengths)
+    best_ms = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+    return round(best_ms / 1000)
+
+
+async def recording_length_by_isrc(isrc: str, *, timeout_s: float = 15.0) -> int | None:
+    """Look up the recognized recording's length (seconds) by ISRC via
+    MusicBrainz recording search. Returns None on no ISRC, no match, no
+    length, or any network/parse error. Distinct from `lookup_by_isrc`
+    (which walks to a release); this only reads the recording length."""
+    if not isrc:
+        return None
+    query = urllib.parse.quote(f"isrc:{isrc}")
+    url = (
+        f"https://musicbrainz.org/ws/2/recording/?query={query}"
+        f"&fmt=json&limit=10"
+    )
+    headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+    try:
+        timeout = aiohttp.ClientTimeout(total=timeout_s)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, headers=headers) as resp:  # skylos: ignore SKY-D216 — url built from hardcoded musicbrainz.org template; only ISRC interpolated via urllib.quote
+                if resp.status != 200:
+                    log.info("isrc-duration: isrc=%s status=%d", isrc, resp.status)
+                    return None
+                data = await resp.json()
+    except Exception as e:  # noqa: BLE001 — network/parse: log + None
+        log.info("isrc-duration: isrc=%s lookup failed: %r", isrc, e)
+        return None
+    return _pick_recording_length(data.get("recordings") or [])
 
 
 async def lookup_by_isrc(
@@ -436,6 +479,7 @@ __all__ = [
     "DISCOVERED_DB_PATH",
     "lookup_by_isrc",
     "lookup_by_artist_album",
+    "recording_length_by_isrc",
     "persist",
     "find_discovered_release_by_artist_album",
 ]
