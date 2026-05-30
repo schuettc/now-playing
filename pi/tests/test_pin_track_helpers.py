@@ -9,6 +9,7 @@ tests pin down the helpers in isolation so future refactors stay safe.
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -20,6 +21,7 @@ if str(_PI_ROOT) not in sys.path:
     sys.path.insert(0, str(_PI_ROOT))
 
 from nowplaying.control.pin_track import (  # noqa: E402
+    _apply_pin_state,
     _apply_pin_to_locked,
     _parse_pin_request_body,
     _resolve_pin_match,
@@ -257,3 +259,81 @@ def test_apply_pin_to_locked_uses_request_pos_when_matched_lacks_position() -> N
     )
     assert canonical == "A1"
     assert locked["track_position"] == "A1"
+
+
+# ── _apply_pin_state predicted-advance backdate ──────────────────────
+
+
+def _patched_loop():
+    """Patch asyncio.get_running_loop so _apply_pin_state's confidence-stamp
+    refresh works without a real loop."""
+    fake_loop = MagicMock()
+    fake_loop.time.return_value = 1_000_000.0
+    return patch.object(asyncio, "get_running_loop", lambda: fake_loop)
+
+
+def _pin_state(locked, *, predicted_position=None, track_started_at="now"):
+    """Minimal state stub for _apply_pin_state on the is_different_track,
+    first_miss_offset=None path."""
+    s = MagicMock()
+    s.last_vinyl = locked
+    s.track_started_at = track_started_at
+    s.predicted_position = predicted_position
+    # No first-miss timestamp → _first_miss_initial_position_s returns None.
+    s.last_unmatched_after_match_unix_ts = None
+    s.last_pin_unix_ts = None
+    s.user_track_pin = None
+    return s
+
+
+def test_apply_pin_state_uses_predicted_started_at_when_no_first_miss() -> None:
+    """Different-track pin, no first-miss boundary, but a predicted-advance
+    hint exists for the pinned position → pin TTL uses the stamped
+    track_started_at (known-elapsed path), NOT None (full-duration path).
+
+    Regression: docs/features/advance-on-shazam-quiet-records/. Without
+    this the pin gets the full duration from the tap and outlives its own
+    track, suppressing the next predicted-advance.
+    """
+    locked = {"release_id": 100, "track_position": "C10", "side": "C"}
+    predicted = {
+        "release_id": 100,
+        "track_position": "C11",
+        "side": "C",
+        "track_started_at": "2026-05-29T12:00:00Z",
+    }
+    matched = {"position": "C11", "title": "Leo", "duration_seconds": 200, "side": "C"}
+    state = _pin_state(locked, predicted_position=predicted)
+    with _patched_loop(), patch("nowplaying.control.pin_track._apply_user_track_pin"):
+        result = _apply_pin_state(state, locked, 100, matched, "C11")
+    assert result.pin_track_started_at == "2026-05-29T12:00:00Z"
+    # predicted_position is still cleared after consumption.
+    assert state.predicted_position is None
+
+
+def test_apply_pin_state_falls_back_to_none_when_no_predicted_hint() -> None:
+    """Different-track pin, no first-miss boundary, no predicted hint →
+    fresh-start path (pin_track_started_at is None / full-duration TTL)."""
+    locked = {"release_id": 100, "track_position": "C10", "side": "C"}
+    matched = {"position": "C11", "title": "Leo", "duration_seconds": 200, "side": "C"}
+    state = _pin_state(locked, predicted_position=None)
+    with _patched_loop(), patch("nowplaying.control.pin_track._apply_user_track_pin"):
+        result = _apply_pin_state(state, locked, 100, matched, "C11")
+    assert result.pin_track_started_at is None
+
+
+def test_apply_pin_state_ignores_predicted_hint_for_different_position() -> None:
+    """A predicted-advance hint for a DIFFERENT position than the one being
+    pinned must not be consumed — fall back to the fresh-start path."""
+    locked = {"release_id": 100, "track_position": "C10", "side": "C"}
+    predicted = {
+        "release_id": 100,
+        "track_position": "C12",  # not the pinned position
+        "side": "C",
+        "track_started_at": "2026-05-29T12:00:00Z",
+    }
+    matched = {"position": "C11", "title": "Leo", "duration_seconds": 200, "side": "C"}
+    state = _pin_state(locked, predicted_position=predicted)
+    with _patched_loop(), patch("nowplaying.control.pin_track._apply_user_track_pin"):
+        result = _apply_pin_state(state, locked, 100, matched, "C11")
+    assert result.pin_track_started_at is None

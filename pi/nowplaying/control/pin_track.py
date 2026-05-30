@@ -125,6 +125,28 @@ def _predicted_transition_boundary(
     return max(candidates)
 
 
+def _predicted_started_at_for_pin(state, pos: str) -> str | None:
+    """Return the predicted-advance back-dated start for `pos`, or None.
+
+    The orchestrator's predicted-advance stamps a back-dated
+    ``track_started_at`` onto ``state.predicted_position``. When the user
+    pins that same predicted track, that start is the right input to the
+    pin TTL math (the track has already been playing for ~the back-date),
+    so the pin gets an elapsed-aware TTL instead of full-duration-from-tap.
+    Returns None when no prediction exists, it targets a different
+    position, or it carries no stamped start.
+    See docs/features/advance-on-shazam-quiet-records/.
+    """
+    predicted = getattr(state, "predicted_position", None)
+    if not isinstance(predicted, dict):
+        return None
+    predicted_pos = (predicted.get("track_position") or "").strip().upper()
+    if predicted_pos != pos.strip().upper():
+        return None
+    started = predicted.get("track_started_at")
+    return started if isinstance(started, str) else None
+
+
 def _bad_pin_request(reason: str, error: str) -> web.Response:
     """4xx response with machine-readable `reason` code + human message."""
     return web.json_response(
@@ -216,6 +238,14 @@ def _apply_pin_state(
     prior_track_started_at = (
         None if is_different_track else state.track_started_at
     )
+    # Capture the predicted-advance hint BEFORE it is cleared below. When the
+    # pin lands on the predicted track and we have no first-miss boundary, the
+    # prediction's back-dated start lets us compute an elapsed-aware TTL rather
+    # than full-duration-from-tap (which would outlive the track and suppress
+    # the next advance). See docs/features/advance-on-shazam-quiet-records/.
+    predicted_started_at = (
+        _predicted_started_at_for_pin(state, pos) if is_different_track else None
+    )
     canonical_pos, title, duration = _apply_pin_to_locked(
         locked, matched, pos, now_iso,
     )
@@ -233,6 +263,13 @@ def _apply_pin_state(
         # outlives the real track end.
         # See docs/features/pin-ttl-ignores-initial-track-position/.
         pin_track_started_at = state.track_started_at
+    elif predicted_started_at is not None:
+        # Predicted-advance hint for this exact position: the track has been
+        # playing since the prediction's back-dated start, so use it for the
+        # known-elapsed TTL path. Don't reset state.track_started_at — the
+        # backdated value already reflects reality.
+        state.track_started_at = predicted_started_at
+        pin_track_started_at = predicted_started_at
     else:
         state.track_started_at = now_iso
         pin_track_started_at = prior_track_started_at

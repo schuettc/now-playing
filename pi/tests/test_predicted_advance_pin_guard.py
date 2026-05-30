@@ -230,6 +230,56 @@ def test_pin_expired_high_streak_triggers_needs_id(orch):
     orch._seed_prediction_from_last_vinyl.assert_not_called()
 
 
+# ── predicted-advance pin elapsed-aware TTL (advance-on-shazam-quiet-records) ─
+
+
+def test_predicted_advance_pin_elapsed_ttl_lets_advance_proceed(orch):
+    """A pin created for a predicted-advance track gets an elapsed-aware TTL
+    (remaining time at tap), so once the real track ends the pin expires and
+    `_decide_suppress_advance` returns False — the next advance can fire.
+
+    Contrast: a full-duration-from-tap pin (the bug) would still be live at
+    the real track end and keep suppressing. We assert the elapsed-aware pin
+    is expired and the full-from-tap pin is NOT, at the same wall-clock point.
+
+    Scenario: 200s track, user pinned the predicted track ~30s after it began
+    (predicted-advance back-dates the start by ~RECOGNITION_LEAD_S). The pin
+    was set 170s ago. Real track ended 30s ago.
+    """
+    from nowplaying.orchestrator.pin import compute_pin_duration
+
+    duration = 200
+    backdate_at_tap = 30  # track had played ~30s when the user pinned
+    started_iso = _track_started_at(elapsed_s=backdate_at_tap)
+    # Elapsed-aware TTL: 200 - 30 - PIN_SAFETY_MARGIN_S(30) = 140.
+    elapsed_aware_ttl = compute_pin_duration(duration, started_iso)
+    assert elapsed_aware_ttl < duration  # shorter than full-from-tap
+
+    # The pin has been live for 170s (track started 200s ago, pinned at +30s).
+    pin_age = duration - backdate_at_tap
+    elapsed_aware_pin = {
+        "release_id": 31427573,
+        "track_position": "C10",
+        "monotonic_ts": _MONO_NOW - pin_age,
+        "duration_seconds": elapsed_aware_ttl,
+    }
+    full_from_tap_pin = {
+        "release_id": 31427573,
+        "track_position": "C10",
+        "monotonic_ts": _MONO_NOW - pin_age,
+        "duration_seconds": duration,  # the bug: full duration from tap
+    }
+
+    # Elapsed-aware pin is expired at the real track end → advance allowed.
+    orch.state.fingerprint_anchor = None
+    orch.state.user_track_pin = elapsed_aware_pin
+    assert orch._decide_suppress_advance(orch.state, _MONO_NOW) is False
+
+    # Full-from-tap pin is STILL live at the same instant → would suppress.
+    orch.state.user_track_pin = full_from_tap_pin
+    assert orch._decide_suppress_advance(orch.state, _MONO_NOW) is True
+
+
 # ── fingerprint anchor guard scenarios (6–9) ─────────────────────────────────
 
 

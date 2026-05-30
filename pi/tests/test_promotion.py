@@ -245,6 +245,100 @@ def test_guard_refuses_when_audio_matches_different_cohort(
     assert count == 0
 
 
+def test_guard_threshold_is_thirty(tmp_db: Path):
+    """GUARD_THRESHOLD sits between the false-positive ceiling (~51) and the
+    true-positive floor (~80). See advance-on-shazam-quiet-records."""
+    assert promotion.GUARD_THRESHOLD == 30
+
+
+def test_guard_does_not_refuse_low_score_collision(
+    tmp_db: Path, monkeypatch, caplog,
+):
+    """A coincidental cross-cohort collision at hits=6 (below GUARD_THRESHOLD)
+    must NOT refuse the promotion. Five is the engine floor; observed false
+    positives ran 15–51, so a 6-hit match is noise, not evidence.
+    """
+    assert _run(promotion.maybe_promote(
+        release_id=100, track_position="A1", track_position_s=0.0,
+        wav_bytes=_make_wav(seed=1), db_path=tmp_db,
+    )) is True
+    Hit = fingerprint.Hit
+    def fake_match(wav, release_id, min_hits=10, *, db_path=None):
+        # match() would filter to >= min_hits in production; the guard's
+        # raised threshold means a 6-hit collision never returns at all.
+        if min_hits > 6:
+            return []
+        return [Hit(ref_id=1, release_id=release_id, track_position="A1",
+                    hits=6, track_position_s=0.0)]
+    monkeypatch.setattr(fingerprint, "match", fake_match)
+    with caplog.at_level(logging.INFO, logger="nowplaying.promotion"):
+        r = _run(promotion.maybe_promote(
+            release_id=100, track_position="A2", track_position_s=0.0,
+            wav_bytes=_make_wav(seed=2), db_path=tmp_db,
+        ))
+    assert r is True
+    assert not any(
+        "audio-matches-different-cohort" in rec.getMessage()
+        for rec in caplog.records
+    )
+
+
+def test_guard_refuses_dominant_cohort_at_threshold(
+    tmp_db: Path, monkeypatch, caplog,
+):
+    """A single dominant cross-cohort match at hits>=GUARD_THRESHOLD (and no
+    runner-up to dilute the margin) still refuses — real misattribution."""
+    assert _run(promotion.maybe_promote(
+        release_id=100, track_position="A1", track_position_s=0.0,
+        wav_bytes=_make_wav(seed=1), db_path=tmp_db,
+    )) is True
+    Hit = fingerprint.Hit
+    def fake_match(wav, release_id, min_hits=10, *, db_path=None):
+        return [Hit(ref_id=1, release_id=release_id, track_position="A1",
+                    hits=90, track_position_s=0.0)]
+    monkeypatch.setattr(fingerprint, "match", fake_match)
+    with caplog.at_level(logging.INFO, logger="nowplaying.promotion"):
+        r = _run(promotion.maybe_promote(
+            release_id=100, track_position="A2", track_position_s=0.0,
+            wav_bytes=_make_wav(seed=2), db_path=tmp_db,
+        ))
+    assert r is False
+    assert any(
+        "audio-matches-different-cohort" in rec.getMessage()
+        for rec in caplog.records
+    )
+
+
+def test_guard_margin_gate_allows_two_ambiguous_cohorts(
+    tmp_db: Path, monkeypatch,
+):
+    """Two wrong cohorts scoring close together (no 2x dominance) is
+    ambiguous noise — the margin gate ALLOWS the promotion rather than
+    refusing on a non-dominant top hit. Mirrors the recognition cascade's
+    top-2 margin rule.
+    """
+    assert _run(promotion.maybe_promote(
+        release_id=100, track_position="A1", track_position_s=0.0,
+        wav_bytes=_make_wav(seed=1), db_path=tmp_db,
+    )) is True
+    Hit = fingerprint.Hit
+    def fake_match(wav, release_id, min_hits=10, *, db_path=None):
+        # Two cohorts at ~40 each: top (40) does not dominate runner-up (38)
+        # by 2x, so the gate treats it as ambiguous and allows.
+        return [
+            Hit(ref_id=1, release_id=release_id, track_position="A1",
+                hits=40, track_position_s=0.0),
+            Hit(ref_id=2, release_id=release_id, track_position="A3",
+                hits=38, track_position_s=0.0),
+        ]
+    monkeypatch.setattr(fingerprint, "match", fake_match)
+    r = _run(promotion.maybe_promote(
+        release_id=100, track_position="A2", track_position_s=0.0,
+        wav_bytes=_make_wav(seed=2), db_path=tmp_db,
+    ))
+    assert r is True
+
+
 def test_guard_allows_when_audio_matches_same_cohort(tmp_db: Path, monkeypatch):
     """With refs for A1, a NEW ref for A1 (well-spaced) is allowed even if
     the guard's fingerprint.match returns a hit — same cohort is fine."""

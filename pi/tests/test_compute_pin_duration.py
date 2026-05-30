@@ -154,6 +154,30 @@ def test_none_duration_returns_none():
     assert compute_pin_duration(None, "2026-05-18T12:00:00Z") is None
 
 
+# ── predicted-advance pin TTL (advance-on-shazam-quiet-records) ───────
+
+
+def test_predicted_advance_pin_uses_elapsed_aware_ttl_not_full_from_tap():
+    """A pin created for a predicted-advance track must get an elapsed-aware
+    TTL, NOT the full track duration measured from the tap moment.
+
+    Why: docs/features/advance-on-shazam-quiet-records/. Predicted-advance
+    back-dates the track start by ~RECOGNITION_LEAD_S seconds; if the pin
+    fell back to the fresh-start (None) path it would get the FULL duration
+    from the tap, so the pin outlives its own track and suppresses the next
+    advance. Feeding the stamped back-dated start gives a TTL shorter than
+    full duration.
+    """
+    now_epoch = 1_000_000.0
+    elapsed = 30  # predicted-advance back-dated start ~30s before tap
+    started_iso = _iso_from_epoch(now_epoch - elapsed)
+    with patch("nowplaying.orchestrator.pin.time.time", return_value=now_epoch):
+        ttl = compute_pin_duration(180, started_iso)
+    # 180 - 30 - 30 = 120; strictly less than the full-from-tap value (180).
+    assert ttl == 120
+    assert ttl < 180
+
+
 # ── result is always an int ───────────────────────────────────────────
 
 

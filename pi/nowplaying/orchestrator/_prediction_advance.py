@@ -146,6 +146,16 @@ class _AdvanceMixin:
             return False
         if track_started_at_override is not None:
             payload["track_started_at"] = track_started_at_override
+        # Stamp the back-dated start onto the prediction so a later pin on
+        # this track can derive an elapsed-aware TTL (known-elapsed path)
+        # instead of falling back to full-duration-from-tap. The override
+        # is the same value seeded onto the payload above; when no override
+        # was supplied, fall back to the payload's own start (the
+        # per-method RECOGNITION_LEAD_S back-date set by _build_predicted_payload).
+        # See docs/features/advance-on-shazam-quiet-records/.
+        advanced["track_started_at"] = (
+            track_started_at_override or payload.get("track_started_at")
+        )
         # Commit state + publish.
         state.predicted_position = advanced
         state.unmatched_streak = 0
