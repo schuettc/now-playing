@@ -4,7 +4,7 @@ import {
   findTrackMatch,
   hasArtistOrAlbumMatch,
 } from './useIdentifySearch';
-import type { SearchResponse } from './types';
+import type { SearchResponse, SearchTrack } from './types';
 
 const rel = (
   release_id: number,
@@ -192,5 +192,23 @@ describe('findTrackMatch', () => {
       groups: [],
     };
     expect(findTrackMatch(data, '')).toBeNull();
+  });
+
+  it('matches on raw title even when clean_title is present (matching uses title, not clean_title)', () => {
+    // SearchTrack carries clean_title for display only; token-match still
+    // keys off the raw title field so the autopilot behaviour is unaffected.
+    const trackWithClean: SearchTrack = {
+      position: 'A1',
+      title: 'Saturday Saviour (2024 Remaster)',
+      clean_title: 'Saturday Saviour',
+    };
+    const data: SearchResponse = {
+      items: [{ release_id: 1, artist: 'A', title: 'Album A', tracks: [trackWithClean] }],
+      groups: [],
+    };
+    // Matches on the raw title substring
+    expect(findTrackMatch(data, 'remaster')).toEqual({ releaseId: 1, position: 'A1' });
+    // clean_title value also happens to match (same word stem)
+    expect(findTrackMatch(data, 'saturday')).toEqual({ releaseId: 1, position: 'A1' });
   });
 });

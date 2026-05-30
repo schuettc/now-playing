@@ -5,6 +5,7 @@ interface ApiTrack {
   position: string;
   side: string | null;
   title: string;
+  clean_title?: string | null;
   duration_seconds: number | null;
 }
 
@@ -12,7 +13,7 @@ function toTracklistItem(t: ApiTrack): TracklistItem {
   return {
     position: t.position,
     side: t.side ?? null,
-    title: t.title,
+    title: t.clean_title ?? t.title,
     duration_seconds: t.duration_seconds ?? 0,
   };
 }

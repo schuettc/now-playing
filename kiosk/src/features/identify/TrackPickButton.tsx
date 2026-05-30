@@ -122,7 +122,7 @@ export function TrackPickButton({
       <TrackButtonContent
         state={state}
         position={track.position ?? ''}
-        title={track.title ?? ''}
+        title={(track.clean_title ?? track.title) ?? ''}
       />
     </button>
   );
