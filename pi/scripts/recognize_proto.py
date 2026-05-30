@@ -102,11 +102,7 @@ async def recognize(  # skylos: ignore — prototype recognizer; production casc
         )
         if rel:
             base.update(_release_fields(rel))
-            base["title"] = (
-                rel.get("matched_track_clean_title")
-                or rel.get("matched_track_title")
-                or shazam_track_title
-            )
+            base["title"] = rel.get("matched_track_title") or shazam_track_title
             base["track_position"] = rel.get("matched_track_position")
             base["match_score"] = rel.get("match_score")
             # _release_fields already set base["album"] from disambiguated_album

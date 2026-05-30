@@ -41,9 +41,8 @@ def _build_fingerprint_payload(
         # followed by a confirmation hit on the same album).
         tr_pos = tr.get("track_position") or tr.get("position")
         if tr_pos == top.track_position:
-            display = tr.get("clean_title") or tr.get("title")
-            if display:
-                payload["title"] = display
+            if tr.get("title"):
+                payload["title"] = tr["title"]
             if tr.get("duration_seconds") is not None:
                 payload["duration_seconds"] = tr["duration_seconds"]
             break
@@ -107,9 +106,8 @@ def _build_blind_fingerprint_payload(  # skylos: ignore SKY-Q301 SKY-C304 — Wh
             "duration_seconds": tr.get("duration_seconds"),
         })
         if pos == top.track_position:
-            display = tr.get("clean_title") or title
-            if display:
-                track_title = display
+            if title:
+                track_title = title
             # Top-level duration_seconds — required by the predicted-advance
             # duration guard (`_handle_unmatched_music_level`). Without it,
             # `state.last_vinyl.get("duration_seconds")` returns None and the

@@ -726,10 +726,12 @@ def test_confirmation_no_anchor_uses_overlay_path_with_correct_title(
     )
 
 
-# ── clean_title preference (display/scrobble) ────────────────────────────
+# ── matched track title (cleaning delegated to publish choke point) ──────
 
 
-def test_build_fingerprint_payload_prefers_clean_title():
+def test_build_fingerprint_payload_uses_matched_track_title():
+    # Builder now returns the RAW matched title; _apply_clean_display_title
+    # at the publish choke point handles cleaning for display.
     from nowplaying.orchestrator.fingerprint import _build_fingerprint_payload
     locked_payload = {
         "release_id": 1, "artist": "The Beatles", "album": "Blue",
@@ -741,11 +743,12 @@ def test_build_fingerprint_payload_prefers_clean_title():
     }
     top = Hit(ref_id=1, release_id=1, track_position="A2", hits=80, track_position_s=0.0)
     payload = _build_fingerprint_payload(locked_payload, top, "vinyl")
-    assert payload["title"] == "Penny Lane"
+    assert payload["title"] == "Penny Lane (2017 Mix)"
     assert payload["duration_seconds"] == 163
+    assert payload["track_position"] == "A2"
 
 
-def test_build_fingerprint_payload_falls_back_to_raw_when_no_clean():
+def test_build_fingerprint_payload_uses_raw_title_when_no_clean():
     from nowplaying.orchestrator.fingerprint import _build_fingerprint_payload
     locked_payload = {
         "release_id": 1, "track_position": "A1", "title": "x",
