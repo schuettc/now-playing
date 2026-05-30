@@ -15,6 +15,20 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 DB_PATH = REPO_ROOT / "pi" / "data" / "discogs.sqlite"
 
 
+def set_track_duration(release_id: int, position: str, seconds: int) -> int:
+    """Guarded write: set a track's duration only when currently NULL.
+    Returns rows updated (0 or 1). Used by ISRC-duration background
+    enrichment; never overwrites an existing duration."""
+    with sqlite3.connect(DB_PATH) as con:
+        cur = con.execute(
+            "UPDATE tracks SET duration_seconds = ? "
+            "WHERE release_id = ? AND position = ? AND duration_seconds IS NULL",
+            (int(seconds), release_id, position),
+        )
+        con.commit()
+        return cur.rowcount
+
+
 def _normalize(s: str) -> str:
     s = (s or "").lower()
     s = re.sub(r"\(.*?\)|\[.*?\]", "", s)  # strip parentheticals

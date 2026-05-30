@@ -104,6 +104,20 @@ def _migrate_clean_title(con: sqlite3.Connection) -> None:
         con.execute("ALTER TABLE tracks ADD COLUMN clean_title_source TEXT")
 
 
+def set_track_duration_mbid(mbid: str, position: str, seconds: int) -> int:
+    """Guarded write for discovered.sqlite (keyed by mbid). NULL-guarded.
+    Returns rows updated (0 or 1). Used by ISRC-duration background
+    enrichment; never overwrites an existing duration."""
+    with sqlite3.connect(DISCOVERED_DB_PATH) as con:
+        cur = con.execute(
+            "UPDATE tracks SET duration_seconds = ? "
+            "WHERE mbid = ? AND position = ? AND duration_seconds IS NULL",
+            (int(seconds), mbid, position),
+        )
+        con.commit()
+        return cur.rowcount
+
+
 def open_ro(db_path: Path = DISCOVERED_DB_PATH) -> sqlite3.Connection:
     """Open the discovered DB read-only. Returns row-factory connection.
 
