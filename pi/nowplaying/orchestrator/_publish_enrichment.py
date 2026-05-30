@@ -27,6 +27,29 @@ from nowplaying.orchestrator.streaming_idle import (
 log = logging.getLogger("nowplaying.main")
 
 
+def _apply_clean_display_title(payload: dict) -> None:
+    """Overwrite the display title with the matched track's ``clean_title``
+    (mix/remaster/year annotations stripped) from the payload's tracklist.
+
+    Central choke point: every vinyl publish routes through
+    ``_anchor_and_publish``, so cleaning here covers all cascade branches
+    uniformly — recognize, F3/F4 fingerprint, predicted-advance, needs-id —
+    instead of relying on each payload builder to clean its own title.
+    Upstream position matching still uses the raw title; this only affects
+    the displayed/scrobbled title. No-op when there's no matching tracklist
+    entry carrying a ``clean_title``.
+    """
+    pos = payload.get("track_position")
+    if not pos:
+        return
+    for tr in (payload.get("tracklist") or []):
+        if (tr.get("position") or tr.get("track_position")) == pos:
+            clean = tr.get("clean_title")
+            if clean:
+                payload["title"] = clean
+            return
+
+
 def _art_url_for_release(release_id: int) -> str:
     """Canonical art URL for a release_id, with ?v=<epoch> appended when
     a user override exists so browser caches refresh after picks.
@@ -124,6 +147,10 @@ class PublishEnrichmentMixin:
         hits get a heuristic anchor derived from match latency.
         """
         state = self.state
+        # Central display-title cleaning — every publish path lands here, so
+        # all cascade branches show the cleaned title (not just the builders
+        # that were patched individually).
+        _apply_clean_display_title(payload)
         precise = payload.get("track_started_at")
         identity = (
             payload.get("artist"),
