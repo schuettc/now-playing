@@ -291,6 +291,17 @@ def _apply_user_track_pin(
         "initial_track_position_s": initial_track_position_s,
     }
     state.pin_different_track_streak = 0
+    # A manual identify IS a recognition — record it in session memory just
+    # like a Shazam/fingerprint confirm does. Without this, on a Shazam-quiet
+    # side (user identifies A1, no Shazam hit) the set stays empty, so when A2
+    # is later pinned the fresh-side gate sees "no other track seen" and
+    # mis-classifies A2 as first-track-of-side, backfilling from the side edge
+    # and sweeping up A1's audio. Use raw `pos` to match the recognition
+    # convention in _heartbeat_handlers / _prediction_advance.
+    # See docs/features/advance-on-shazam-quiet-records/.
+    seen = getattr(state, "tracks_seen_since_audible_edge", None)
+    if isinstance(seen, set):
+        seen.add(pos)
     # Stamp wall-clock so the next pin's backfill window anchors to this
     # pin (not the older Shazam-confirm) when they're on the same album lock.
     state.last_pin_unix_ts = int(time.time())
