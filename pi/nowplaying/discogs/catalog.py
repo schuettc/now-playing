@@ -20,6 +20,7 @@ def set_track_duration(release_id: int, position: str, seconds: int) -> int:
     Returns rows updated (0 or 1). Used by ISRC-duration background
     enrichment; never overwrites an existing duration."""
     with sqlite3.connect(DB_PATH) as con:
+        con.execute("PRAGMA busy_timeout=5000")
         cur = con.execute(
             "UPDATE tracks SET duration_seconds = ? "
             "WHERE release_id = ? AND position = ? AND duration_seconds IS NULL",

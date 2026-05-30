@@ -109,6 +109,7 @@ def set_track_duration_mbid(mbid: str, position: str, seconds: int) -> int:
     Returns rows updated (0 or 1). Used by ISRC-duration background
     enrichment; never overwrites an existing duration."""
     with sqlite3.connect(DISCOVERED_DB_PATH) as con:
+        con.execute("PRAGMA busy_timeout=5000")
         cur = con.execute(
             "UPDATE tracks SET duration_seconds = ? "
             "WHERE mbid = ? AND position = ? AND duration_seconds IS NULL",

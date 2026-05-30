@@ -214,7 +214,7 @@ async def _run_isrc_duration(isrc: str, *, release_id, mbid, position: str) -> N
     """Drive the ISRC → duration fill: fetch length from MB, write to catalog."""
     try:
         secs = await musicbrainz_lookup.recording_length_by_isrc(isrc)
-        if not secs:
+        if secs is None:
             _isrc_no_duration.add(isrc)
             return
         n = (_set_discogs_duration(release_id, position, secs)

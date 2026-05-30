@@ -38,6 +38,18 @@ log = logging.getLogger("nowplaying.discovery")
 USER_AGENT = coverart.USER_AGENT
 _NEGATIVE_TTL_S = 7 * 24 * 3600
 
+# Serialises recording_length_by_isrc HTTP calls to honour MusicBrainz's
+# 1 req/s rate limit. Lazy-initialised (same pattern as art_cache._get_semaphore)
+# to avoid creating the Semaphore at import time when no event loop is running.
+_mb_rate_limit: asyncio.Semaphore | None = None
+
+
+def _get_mb_rate_limit() -> asyncio.Semaphore:
+    global _mb_rate_limit
+    if _mb_rate_limit is None:
+        _mb_rate_limit = asyncio.Semaphore(1)
+    return _mb_rate_limit
+
 # Sides A..Z by medium ordinal; single-medium vinyl releases come out
 # as A1, A2, ... — downstream consumers treat the tracklist opaquely,
 # so this is good enough for side-timer / BEST GUESS rendering.
@@ -163,12 +175,14 @@ async def recording_length_by_isrc(isrc: str, *, timeout_s: float = 15.0) -> int
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
     try:
         timeout = aiohttp.ClientTimeout(total=timeout_s)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url, headers=headers) as resp:  # skylos: ignore SKY-D216 — url built from hardcoded musicbrainz.org template; only ISRC interpolated via urllib.quote
-                if resp.status != 200:
-                    log.info("isrc-duration: isrc=%s status=%d", isrc, resp.status)
-                    return None
-                data = await resp.json()
+        async with _get_mb_rate_limit():
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url, headers=headers) as resp:  # skylos: ignore SKY-D216 — url built from hardcoded musicbrainz.org template; only ISRC interpolated via urllib.quote
+                    if resp.status != 200:
+                        log.info("isrc-duration: isrc=%s status=%d", isrc, resp.status)
+                        return None
+                    data = await resp.json()
+            await asyncio.sleep(1.0)  # enforce 1 req/s inside the semaphore
     except Exception as e:  # noqa: BLE001 — network/parse: log + None
         log.info("isrc-duration: isrc=%s lookup failed: %r", isrc, e)
         return None
