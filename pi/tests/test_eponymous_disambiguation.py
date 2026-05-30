@@ -52,6 +52,8 @@ def _catalog_db(releases):
         "  side TEXT,"
         "  title TEXT,"
         "  duration_seconds INTEGER,"
+        "  clean_title TEXT,"
+        "  clean_title_source TEXT,"
         "  is_suite_parent INTEGER NOT NULL DEFAULT 0"
         ")"
     )
