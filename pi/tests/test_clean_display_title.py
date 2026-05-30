@@ -29,6 +29,24 @@ def test_overwrites_with_clean_title():
     assert p["title"] == "Penny Lane"
 
 
+def test_cleans_every_tracklist_entry_display_title():
+    # The kiosk renders each tracklist row's `title`, so they must all be
+    # cleaned (not just the currently-playing one).
+    p = {
+        "track_position": "A1",
+        "title": "American Idiot",
+        "tracklist": [
+            {"position": "A1", "title": "American Idiot (2024 Mix)", "clean_title": "American Idiot"},
+            {"position": "A2", "title": "Penny Lane (2017 Mix)", "clean_title": "Penny Lane"},
+            {"position": "A3", "title": "Hey Jude (Live)", "clean_title": "Hey Jude (Live)"},
+            {"position": "A4", "title": "No Clean Here"},  # clean_title absent → unchanged
+        ],
+    }
+    _apply_clean_display_title(p)
+    titles = [t["title"] for t in p["tracklist"]]
+    assert titles == ["American Idiot", "Penny Lane", "Hey Jude (Live)", "No Clean Here"]
+
+
 def test_no_clean_title_leaves_raw():
     p = {
         "track_position": "A2",

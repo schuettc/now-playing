@@ -28,21 +28,27 @@ log = logging.getLogger("nowplaying.main")
 
 
 def _apply_clean_display_title(payload: dict) -> None:
-    """Overwrite the display title with the matched track's ``clean_title``
-    (mix/remaster/year annotations stripped) from the payload's tracklist.
+    """Rewrite display titles to the cleaned ``clean_title`` (mix/remaster/
+    year annotations stripped): both the top-level now-playing title AND
+    every tracklist entry's title (the kiosk renders each row's ``title``).
 
     Central choke point: every vinyl publish routes through
     ``_anchor_and_publish``, so cleaning here covers all cascade branches
     uniformly — recognize, F3/F4 fingerprint, predicted-advance, needs-id —
     instead of relying on each payload builder to clean its own title.
-    Upstream position matching still uses the raw title; this only affects
-    the displayed/scrobbled title. No-op when there's no matching tracklist
-    entry carrying a ``clean_title``.
+    Safe to overwrite display titles here: upstream position matching uses
+    fresh catalog data (not this payload), and advance/F3 match by position,
+    not title. No-op for entries without a ``clean_title``.
     """
+    tracklist = payload.get("tracklist") or []
+    for tr in tracklist:
+        clean = tr.get("clean_title")
+        if clean:
+            tr["title"] = clean
     pos = payload.get("track_position")
     if not pos:
         return
-    for tr in (payload.get("tracklist") or []):
+    for tr in tracklist:
         if (tr.get("position") or tr.get("track_position")) == pos:
             clean = tr.get("clean_title")
             if clean:
