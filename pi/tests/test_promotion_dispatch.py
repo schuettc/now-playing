@@ -17,11 +17,11 @@ import pytest
 
 from nowplaying.discovery import fingerprint as discovery_fingerprint
 from nowplaying.orchestrator.pin import ANCHOR_TTL_BUFFER_S
-from nowplaying.orchestrator.streaming_idle import SHAZAM_ONLY_MIN_LEVEL_DB
+from nowplaying.orchestrator.streaming_idle import MUSIC_DB
 from nowplaying.vinyl import promotion
 
 _MONO_NOW = 2_000_000.0
-_MUSIC_LEVEL = SHAZAM_ONLY_MIN_LEVEL_DB + 10.0
+_MUSIC_LEVEL = MUSIC_DB + 10.0
 _FAKE_WAV = b"RIFF\x00\x00\x00\x00WAVEfmt "
 
 

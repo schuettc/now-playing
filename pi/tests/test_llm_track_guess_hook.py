@@ -854,7 +854,7 @@ def test_dead_air_gate_all_true_suppresses():
     """All four conditions hold → gate returns True."""
     orch = _state_for_dead_air(deep=True)
     orch.state.unmatched_streak = 3
-    for v in (-9.0, -10.0, -12.0):
+    for v in (-37.0, -38.0, -39.0):  # below MUSIC_DB (-30) → dead air
         orch.state.recent_heartbeat_levels.append(v)
     assert orch._should_suppress_track_guess_for_dead_air(orch.state, 90.0) is True
 
@@ -863,7 +863,7 @@ def test_dead_air_gate_fresh_audible_up_no_suppress():
     """Condition 1 fails (audible-up clock is fresh) → gate False."""
     orch = _state_for_dead_air(deep=True)
     orch.state.unmatched_streak = 3
-    for v in (-9.0, -10.0, -12.0):
+    for v in (-37.0, -38.0, -39.0):  # below MUSIC_DB (-30) → dead air
         orch.state.recent_heartbeat_levels.append(v)
     assert orch._should_suppress_track_guess_for_dead_air(orch.state, 30.0) is False
 
@@ -872,7 +872,7 @@ def test_dead_air_gate_short_unmatched_streak_no_suppress():
     """Condition 2 fails (one-off miss, not a multi-heartbeat run) → gate False."""
     orch = _state_for_dead_air(deep=True)
     orch.state.unmatched_streak = 1
-    for v in (-9.0, -10.0, -12.0):
+    for v in (-37.0, -38.0, -39.0):  # below MUSIC_DB (-30) → dead air
         orch.state.recent_heartbeat_levels.append(v)
     assert orch._should_suppress_track_guess_for_dead_air(orch.state, 90.0) is False
 
@@ -891,7 +891,7 @@ def test_dead_air_gate_early_into_side_no_suppress():
     not end-of-side) → gate False. Structural guard against false-positives."""
     orch = _state_for_dead_air(deep=False)
     orch.state.unmatched_streak = 3
-    for v in (-9.0, -10.0, -12.0):
+    for v in (-37.0, -38.0, -39.0):  # below MUSIC_DB (-30) → dead air
         orch.state.recent_heartbeat_levels.append(v)
     assert orch._should_suppress_track_guess_for_dead_air(orch.state, 90.0) is False
 
@@ -909,7 +909,7 @@ def test_dead_air_gate_no_tracklist_no_suppress():
     orch = _state_for_dead_air(deep=True)
     orch._load_locked_tracks = lambda _state: None
     orch.state.unmatched_streak = 3
-    for v in (-9.0, -10.0, -12.0):
+    for v in (-37.0, -38.0, -39.0):  # below MUSIC_DB (-30) → dead air
         orch.state.recent_heartbeat_levels.append(v)
     assert orch._should_suppress_track_guess_for_dead_air(orch.state, 90.0) is False
 
@@ -920,7 +920,7 @@ def test_compute_track_guess_dead_air_skips_llm(keyed_env, caplog):
     None (caller never assigns it). The suppression log line lands."""
     orch = _state_for_dead_air(deep=True)
     orch.state.unmatched_streak = 3
-    for v in (-9.0, -10.0, -12.0):
+    for v in (-37.0, -38.0, -39.0):  # below MUSIC_DB (-30) → dead air
         orch.state.recent_heartbeat_levels.append(v)
     # Fake audible_up_at_mono so the elapsed clock reads >60s.
     import asyncio as _asyncio
@@ -954,7 +954,7 @@ def test_compute_track_guess_mid_side_miss_still_fires(keyed_env):
     NOT be suppressed — the dead-air gate is structural, not generic."""
     orch = _state_for_dead_air(deep=False)
     orch.state.unmatched_streak = 3
-    for v in (-9.0, -10.0, -12.0):
+    for v in (-37.0, -38.0, -39.0):  # below MUSIC_DB (-30) → dead air
         orch.state.recent_heartbeat_levels.append(v)
     import asyncio as _asyncio
 
@@ -1071,15 +1071,14 @@ def test_end_of_side_gate_within_side_duration_no_suppress():
 
 def test_end_of_side_gate_runout_noise_level_suppresses():
     """Locked at last-on-side, elapsed within cumulative duration (no
-    geometric trigger), but level avg < -3 dB over last 3 heartbeats
-    AND >= 1 unmatched → case B fires. This is the Black Parade
-    2026-05-26 15:31–15:32 regression: runout groove averaged -4.2 dB
-    which the general dead_air gate (-6 threshold) didn't catch."""
+    geometric trigger), but level avg below the music floor (MUSIC_DB = -30)
+    over last 3 heartbeats AND >= 1 unmatched → case B fires (runout groove
+    at last-on-side treated as side-over)."""
     orch = _state_for_end_of_side(
         locked_pos="A4", elapsed_s=100.0,  # still mid-side
     )
     orch.state.unmatched_streak = 1
-    for v in (-3.1, -4.6, -4.7):
+    for v in (-33.0, -34.0, -35.0):  # below MUSIC_DB → runout
         orch.state.recent_heartbeat_levels.append(v)
     assert _with_fake_loop(
         orch,

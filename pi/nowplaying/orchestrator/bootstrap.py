@@ -23,6 +23,7 @@ from nowplaying.sonos.listener import (
 )
 from nowplaying.discovery import init_db as init_discovered_db
 from nowplaying.vinyl import fingerprint
+from nowplaying.vinyl.levels import MUSIC_DB, SILENCE_DB
 from nowplaying.vinyl.runtime import run_capture_supervised
 
 from nowplaying.orchestrator._class import Orchestrator
@@ -130,6 +131,8 @@ async def main_async() -> None:
         run_capture_supervised(
             orch.on_heartbeat, orch.on_capture_state, stop,
             get_start_paused=lambda: _should_pause_capture(state),
+            silence_db=SILENCE_DB,
+            music_db=MUSIC_DB,
             start_paused=initial_should_pause,
         )
     )

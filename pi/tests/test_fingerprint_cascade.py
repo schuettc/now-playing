@@ -349,7 +349,7 @@ def test_pin_promotion_creates_task_with_correct_args(
     """Valid pin + clip → maybe_promote called with pin's release_id,
     pos, and elapsed-since-pin as track_position_s."""
     from nowplaying.vinyl import promotion as prom
-    from nowplaying.orchestrator.streaming_idle import SHAZAM_ONLY_MIN_LEVEL_DB
+    from nowplaying.orchestrator.streaming_idle import MUSIC_DB
     captured: dict = {}
 
     async def fake_maybe_promote(**kwargs):
@@ -369,7 +369,7 @@ def test_pin_promotion_creates_task_with_correct_args(
             "duration_seconds": None,
         }
         await orch_with_lock._schedule_coverage_promotion(
-            b"wavbytes", SHAZAM_ONLY_MIN_LEVEL_DB + 5.0,
+            b"wavbytes", MUSIC_DB + 5.0,
         )
         # Yield until the fire-and-forget task completes.
         for _ in range(50):

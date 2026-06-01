@@ -16,15 +16,14 @@ from nowplaying.orchestrator._first_miss import clear_first_miss_after_match
 from nowplaying.orchestrator.pin import (
     PIN_DIFFERENT_TRACK_RELEASE_STREAK,
     _evaluate_user_pin,
-    _pin_ttl_expired,
 )
 from nowplaying.orchestrator.streaming_idle import (
-    SHAZAM_ONLY_MIN_LEVEL_DB,
+    MUSIC_DB,
     _is_music_level,
 )
 
 if TYPE_CHECKING:
-    from nowplaying.orchestrator.state import State
+    pass
 
 log = logging.getLogger("nowplaying.main")
 
@@ -111,7 +110,7 @@ class _ShazamGateMixin:
         if not _is_music_level(level_db):
             log.info(
                 "shazam-only rejected: level_db=%.1f below %.1f — likely noise",
-                level_db, SHAZAM_ONLY_MIN_LEVEL_DB,
+                level_db, MUSIC_DB,
             )
             return False
         return True

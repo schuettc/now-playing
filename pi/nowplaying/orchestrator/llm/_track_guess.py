@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from nowplaying import history
 from nowplaying.orchestrator.guess import _guess_is_dismissed
+from nowplaying.vinyl.levels import MUSIC_DB
 
 if TYPE_CHECKING:
     from nowplaying.orchestrator.state import State
@@ -116,11 +117,8 @@ class TrackGuessMixin:
     # See docs/features/llm-track-guess-suppress-on-dead-air/.
     _DEAD_AIR_MIN_AUDIBLE_UP_S = 60.0
     _DEAD_AIR_MIN_UNMATCHED_STREAK = 3
-    _DEAD_AIR_LEVEL_DB_AVG_MAX = -6.0  # loosened from -8 after live data
-    # 2026-05-22 showed YPAA flip windows hovering around -7 dB (groove
-    # noise + needle-lift + new-side-drop) without the average ever
-    # dipping below -8. -6 keeps the gate clear of true music levels
-    # (typically -3 or louder) while catching the side-flip transition.
+    # Dead-air level gate uses MUSIC_DB (vinyl/levels.py): audio averaging
+    # below the music floor is dead air / groove noise, not a track.
     _DEAD_AIR_DEEP_FRAC = 0.6
     _DEAD_AIR_LEVEL_WINDOW = 3
     # End-of-side geometric gate: when locked on the *last* track of the
@@ -137,16 +135,12 @@ class TrackGuessMixin:
     # the streak signal at threshold 1 (we know there's no next track).
     _END_OF_SIDE_MARGIN_S = 10.0
     _END_OF_SIDE_FALLBACK_MIN_UNMATCHED_STREAK = 1
-    # End-of-side level-aware gate: when locked at last-on-side we have
-    # a strong prior that any unmatched audio is runout groove noise
-    # (clicks, rumble, RIAA amplification of empty groove). True music
-    # rarely averages below -3 dB while runout typically lands at -3 to
-    # -7 dB. The general dead_air gate uses -6 (tuned for quiet flip
-    # windows mid-album); here we can be much more lenient. Observed
-    # Black Parade runout 2026-05-26 15:31–15:32 averaged -4.2 dB —
-    # the general -6 gate didn't fire but a -3 gate at end-of-side
-    # would have.
-    _END_OF_SIDE_LEVEL_DB_AVG_MAX = -3.0
+    # End-of-side level gate now also uses MUSIC_DB (vinyl/levels.py): on the
+    # clean LINE signal we no longer have the old double-phono-gain that made
+    # runout groove read at -3..-7 dB, so the separate, more-lenient end-of-side
+    # threshold was dropped — audio averaging below the music floor at
+    # last-on-side is treated as runout. Re-introduce a measured const here if
+    # LINE runout ever needs distinct handling.
 
     @staticmethod
     def _compute_elapsed_since_last_confirm_s(track_started_at: str | None) -> float:
@@ -321,7 +315,7 @@ class TrackGuessMixin:
         levels = list(state.recent_heartbeat_levels)[-self._DEAD_AIR_LEVEL_WINDOW:]
         if len(levels) < self._DEAD_AIR_LEVEL_WINDOW:
             return False
-        if sum(levels) / len(levels) >= self._DEAD_AIR_LEVEL_DB_AVG_MAX:
+        if sum(levels) / len(levels) >= MUSIC_DB:
             return False
         locked = state.last_vinyl or {}
         locked_side = locked.get("side")
@@ -413,7 +407,7 @@ class TrackGuessMixin:
         if len(levels) < self._DEAD_AIR_LEVEL_WINDOW:
             return False
         avg_level = sum(levels) / len(levels)
-        return avg_level < self._END_OF_SIDE_LEVEL_DB_AVG_MAX
+        return avg_level < MUSIC_DB
 
     def _compute_likely_flip(
         self,
