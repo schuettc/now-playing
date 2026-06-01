@@ -125,12 +125,41 @@ def test_tracklist_payload_prefers_track_position():
     out = _tracklist_payload([
         {"track_position": "A1", "position": "X1", "title": "Side A Opener"},
     ])
-    assert out == [{"position": "A1", "title": "Side A Opener", "duration_s": None}]
+    assert out == [{
+        "position": "A1", "title": "Side A Opener",
+        "duration_s": None, "start_s": 0, "end_s": None,
+    }]
 
 
 def test_tracklist_payload_falls_back_to_position():
     out = _tracklist_payload([{"position": "B2", "title": "Track"}])
     assert out[0]["position"] == "B2"
+
+
+def test_tracklist_payload_cumulative_windows():
+    """start_s/end_s accumulate from the side's start so the model can locate
+    the track by window lookup instead of summing durations itself."""
+    out = _tracklist_payload([
+        {"position": "A1", "title": "One", "duration_seconds": 190},
+        {"position": "A2", "title": "Two", "duration_seconds": 177},
+        {"position": "A3", "title": "Three", "duration_seconds": 48},
+    ])
+    assert [(t["start_s"], t["end_s"]) for t in out] == [
+        (0, 190), (190, 367), (367, 415),
+    ]
+
+
+def test_tracklist_payload_missing_duration_breaks_window():
+    """A track with unknown duration gets end_s=None and stops the running
+    total from advancing past it."""
+    out = _tracklist_payload([
+        {"position": "A1", "title": "One", "duration_seconds": 100},
+        {"position": "A2", "title": "Two"},               # unknown duration
+        {"position": "A3", "title": "Three", "duration_seconds": 50},
+    ])
+    assert (out[0]["start_s"], out[0]["end_s"]) == (0, 100)
+    assert (out[1]["start_s"], out[1]["end_s"]) == (100, None)
+    assert (out[2]["start_s"], out[2]["end_s"]) == (100, 150)
 
 
 def test_tracklist_payload_duration_priority():

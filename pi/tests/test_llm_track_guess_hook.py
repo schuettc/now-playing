@@ -297,6 +297,66 @@ def test_build_track_guess_prompt_includes_tracklist_and_predicted_position():
     assert "Passover" in p  # title for A3
 
 
+def test_build_track_guess_prompt_includes_estimated_position_and_windows():
+    """Cumulative windows (start_s/end_s) and the precomputed estimated
+    position are rendered so the model does a window lookup, not arithmetic."""
+    p = _build_track_guess_prompt(
+        **{**_SAMPLE_CALL_KWARGS, "estimated_side_position_s": 163.0},
+    )
+    # The data line (distinct from the header's instruction mention) carries
+    # the bucketed value; 163 buckets to 165.
+    assert "anchored to the confirmed track): 165" in p
+    assert "start_s" in p and "end_s" in p
+    # Data line omitted when no estimate is provided (header guidance remains).
+    assert "anchored to the confirmed track):" not in _build_track_guess_prompt(
+        **_SAMPLE_CALL_KWARGS,
+    )
+
+
+def test_cum_start_s_sums_preceding_durations():
+    from nowplaying.orchestrator.llm._track_guess import _cum_start_s
+    side = [
+        {"position": "A1", "duration_seconds": 190},
+        {"position": "A2", "duration_seconds": 177},
+        {"position": "A3", "duration_seconds": 48},
+    ]
+    assert _cum_start_s(side, "A1") == 0
+    assert _cum_start_s(side, "A2") == 190
+    assert _cum_start_s(side, "A3") == 367
+    assert _cum_start_s(side, "Z9") is None
+
+
+def test_estimate_side_position_pin_anchored(monkeypatch):
+    """A live pin anchors the estimate to the confirmed track's cumulative
+    start + how far into it + pin age — stable across predicted-advance drift."""
+    from nowplaying.orchestrator.llm._track_guess import TrackGuessMixin
+    side = [
+        {"position": "A1", "duration_seconds": 360},
+        {"position": "A2", "duration_seconds": 170},
+    ]
+    state = mock.MagicMock()
+    state.user_track_pin = {
+        "track_position": "A2",
+        "initial_track_position_s": 12.0,
+        "monotonic_ts": 1000.0,
+    }
+    fake_loop = mock.MagicMock()
+    fake_loop.time.return_value = 1008.0  # pin age = 8s
+    monkeypatch.setattr(asyncio, "get_event_loop", lambda: fake_loop)
+    # cum_start(A2)=360 + initial 12 + age 8 = 380
+    assert TrackGuessMixin._estimate_side_position_s(state, side, 999.0) == 380.0
+
+
+def test_estimate_side_position_falls_back_to_audible_up_without_pin():
+    """No pin → assume the needle dropped at the side's first track and use
+    elapsed-since-needle-drop."""
+    from nowplaying.orchestrator.llm._track_guess import TrackGuessMixin
+    side = [{"position": "A1", "duration_seconds": 360}]
+    state = mock.MagicMock()
+    state.user_track_pin = None
+    assert TrackGuessMixin._estimate_side_position_s(state, side, 120.0) == 120.0
+
+
 # ── Parser direct ──────────────────────────────────────────────────────
 
 

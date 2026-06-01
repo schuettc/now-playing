@@ -67,6 +67,19 @@ def _cum_duration_at(
     return (cum_at_locked, total)
 
 
+def _cum_start_s(side_tracks: list[dict], pos: str) -> float | None:
+    """Cumulative start offset (seconds from the side's start) of ``pos`` on
+    the side, summing the durations of the tracks before it. None when
+    ``pos`` isn't on the side."""
+    s = 0.0
+    for t in side_tracks:
+        p = t.get("track_position") or t.get("position")
+        if p == pos:
+            return s
+        s += float(t.get("duration_seconds") or t.get("duration_s") or 0)
+    return None
+
+
 def _is_duration_based_deep(
     side_tracks: list[dict],
     locked_pos: str,
@@ -450,6 +463,34 @@ class TrackGuessMixin:
             return (False, None)
         return (True, next_side_first)
 
+    @staticmethod
+    def _estimate_side_position_s(
+        state: "State",
+        side_tracklist: list,
+        elapsed_since_audible_up_s: float,
+    ) -> float | None:
+        """Estimate the current position on the side (seconds from the side's
+        start), anchored to the confirmed track so the LLM does a window
+        lookup instead of summing durations.
+
+        Pin-anchored when a user pin is live — stable across predicted-advance
+        drift (which is what reinforced the racing): ``cum_start(pin pos) +
+        initial_track_position_s + pin age``. Otherwise assume the needle
+        dropped at the side's first track and use elapsed-since-needle-drop.
+        Returns None when neither input is usable.
+        """
+        pin = getattr(state, "user_track_pin", None)
+        if isinstance(pin, dict) and pin.get("track_position"):
+            cs = _cum_start_s(side_tracklist, pin["track_position"])
+            init = pin.get("initial_track_position_s")
+            ts = pin.get("monotonic_ts")
+            if cs is not None and init is not None and ts is not None:
+                age = asyncio.get_event_loop().time() - float(ts)
+                return cs + float(init) + age
+        if elapsed_since_audible_up_s and elapsed_since_audible_up_s > 0:
+            return float(elapsed_since_audible_up_s)
+        return None
+
     async def _try_llm_track_guess(
         self,
         state: "State",
@@ -495,6 +536,9 @@ class TrackGuessMixin:
         likely_flip, next_side_first = self._compute_likely_flip(
             state, float(elapsed_since_audible_up_s),
         )
+        estimated_side_position_s = self._estimate_side_position_s(
+            state, side_tracklist, float(elapsed_since_audible_up_s),
+        )
         verdict = await self.llm.judge_track_guess(
             locked_album_ctx={
                 "locked_artist": state.last_vinyl.get("artist"),
@@ -509,6 +553,7 @@ class TrackGuessMixin:
             elapsed_since_audible_up_s=float(elapsed_since_audible_up_s),
             elapsed_since_last_confirm_s=float(elapsed_since_last_confirm_s),
             predicted_position=predicted_pos,
+            estimated_side_position_s=estimated_side_position_s,
             likely_flip=likely_flip,
             next_side_first=next_side_first,
         )
