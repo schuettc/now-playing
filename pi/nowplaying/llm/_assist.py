@@ -41,7 +41,6 @@ from nowplaying.llm.shazam import (
     _build_shazam_prompt,
 )
 from nowplaying.llm.track_change import (
-    TrackChangeVerdict,
     _TRACK_CHANGE_TOOL_SPEC,
     _build_track_change_prompt,
     _parse_track_change,

@@ -272,9 +272,9 @@ def _build_track_guess_prompt(
         + f"Locked album: {json.dumps(locked_payload, separators=(',', ':'))}\n"
         + f"Side tracklist (in order): {json.dumps(tracklist_payload, separators=(',', ':'))}\n"
         + f"Audible-up timestamp: {json.dumps(audible_up_iso)}\n"
-        + f"Elapsed since needle-drop / audible-up (5s bucket): "
+        + "Elapsed since needle-drop / audible-up (5s bucket): "
         + f"{bucketed_since_up} seconds\n"
-        + f"Elapsed since last confirmed track (5s bucket): "
+        + "Elapsed since last confirmed track (5s bucket): "
         + f"{bucketed_since_confirm} seconds\n"
         + f"Heuristic prediction (predicted_position): {json.dumps(predicted_position)}\n"
         + (
@@ -284,7 +284,7 @@ def _build_track_guess_prompt(
             if estimated_side_position_s is not None
             else ""
         )
-        + f"Recent recognition history (excluding current track): "
+        + "Recent recognition history (excluding current track): "
         + f"{json.dumps(filtered_history, separators=(',', ':'))}\n"
         + flip_block
     )
