@@ -6,6 +6,43 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/). Versioni
 
 ---
 
+## [1.3.0] — 2026-06-02
+
+Track-title cleaning, per-track duration enrichment, and a substantial overhaul of how the kiosk advances and guesses on records Shazam can't fully identify. Backend + kiosk live-verified on the Pi.
+
+### Recognition / advance
+
+- **advance-on-shazam-quiet-records** — Manual locks are now an authoritative *scaling* lock: the hold is `duration − (reliable cue | duration-capped assumed position)`, floored, and decays over a bounded window rather than ending on a hard cliff — so a confirmed lock no longer freezes track advance on Shazam-miss sides. The best-guess is a deterministic cumulative-window interval lookup anchored to the confirmed track, with a no-backward guard (a guess can't jump to an earlier track when the position estimate collapses).
+- **locked-track-stays-confirmed** — A track you locked renders confirmed (never as an italic guess) until a *different* track replaces it; decay governs yielding to a different track, not relabeling the locked one.
+- **isrc-duration-enrichment** — Background ISRC → MusicBrainz `recording_length` on each Shazam match (rate-limit-guarded) with guarded per-track duration setters across both catalogs. Unknown-duration scrobble threshold dropped from 240s to 120s.
+
+### Best-guess pipeline — consolidate-guess-confidence-lifetime
+
+- One backend-owned guess contract — `confidence` / `expires_in_s` / `confirmable` — that the kiosk renders, replacing three overlapping clocks (frontend 60s drain, backend `STATE_DECAY_S`, scaling-lock decay). A shared track-remaining primitive feeds both locks and guesses; a guess now lives for its track's estimated remaining time (the flat window is a no-duration backstop). The kiosk gates the confirm card on `confirmable`, drains over `expires_in_s`, and styles the tracklist ring by `confidence`; the client-side 60s timer and `match_method` re-derivation are removed.
+
+### Display / titles
+
+- **track-title-cleaning** — Regex track-title cleaning (mix/remaster/year tags stripped) with `clean_title` columns across the Discogs/discovered catalogs, used for kiosk display, scrobble, search, and the identify picker. The LLM title-cleaner was dropped (regex scored 37/37 vs the LLM's 18/37 on real data).
+
+### Kiosk UX
+
+- **identify-recents-by-album** — The identify "recently played" suggestions are deduped by album (across tracks, repeats, and pressings) instead of per-recognition.
+- **kiosk-dev-proxy** — Optional `VITE_DEV_PROXY` / `VITE_WS_URL` to drive a local kiosk dev server against a real Pi backend.
+
+### Capture / infra
+
+- **capture-levels** — Capture level thresholds centralized and recalibrated for LINE input (`SILENCE_DB` / `MUSIC_DB` with a hysteresis gap).
+- Test suite runs in parallel with a per-test timeout (xdist + pytest-timeout).
+- `safe_read_bytes` opens with `O_NONBLOCK` so FIFOs are rejected, not blocked on.
+
+### Removed
+
+- The LLM `clean_track_title` and `judge_track_guess` hooks (replaced by regex and the deterministic window guess, respectively). The four live LLM hooks — shazam-relevance, advance, track-change, and reverse-lookup — remain.
+
+[1.3.0]: https://github.com/schuettc/now-playing/releases/tag/v1.3.0
+
+---
+
 ## [1.2.0] — 2026-05-28
 
 On-screen touch keyboard. The lookup search — the only text field on the otherwise tap-only kiosk — now raises an in-app virtual keyboard, so manual artist/album/catalog search works on the touchscreen without a physical keyboard attached.
