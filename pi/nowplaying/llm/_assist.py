@@ -45,11 +45,6 @@ from nowplaying.llm.track_change import (
     _build_track_change_prompt,
     _parse_track_change,
 )
-from nowplaying.llm.track_guess import (
-    _TRACK_GUESS_TOOL_SPEC,
-    _build_track_guess_prompt,
-    _parse_track_guess,
-)
 
 log = logging.getLogger("nowplaying.llm")
 
@@ -204,64 +199,6 @@ class LLMAssist:
         verdict = await self._invoke(
             "judge_reverse_lookup", prompt, _parse_release_pick,
             tool_spec=_REVERSE_LOOKUP_TOOL_SPEC,
-        )
-        return verdict
-
-    async def judge_track_guess(
-        self,
-        *,
-        locked_album_ctx: dict[str, Any],
-        side_tracklist: list[dict[str, Any]],
-        recent_history: list[dict[str, Any]],
-        audible_up_iso: str | None,
-        elapsed_since_audible_up_s: float,
-        elapsed_since_last_confirm_s: float,
-        predicted_position: str | None,
-        estimated_side_position_s: float | None = None,
-        likely_flip: bool = False,
-        next_side_first: dict[str, Any] | None = None,
-    ) -> Any:
-        """Propose the most-likely playing track on a Shazam-miss +
-        fingerprint-miss heartbeat when an album is locked.
-
-        Called from the orchestrator's `_compute_track_guess` helper on
-        the Shazam-miss + fingerprint-miss path. The LLM picks a
-        `position` on the locked side; the orchestrator resolves
-        `title` from the locked tracklist at publish time and emits a
-        nested `guess` object on the WebSocket payload.
-
-        Two separate elapsed-time fields (see
-        docs/features/llm-track-guess-elapsed-frame-confusion/):
-          - elapsed_since_audible_up_s: time since the most recent
-            needle-drop (silent→audible edge). Doesn't reset on
-            predicted-advance.
-          - elapsed_since_last_confirm_s: time since the last positively
-            anchored track (Shazam/fingerprint/user-pin/predicted).
-            Resets on every confirmed track.
-
-        Returns:
-            TrackGuess(position, confidence, source, alt, reason) on success.
-            USE_HEURISTIC when LLM disabled or any error path triggers.
-        """
-        if not self.enabled:
-            return USE_HEURISTIC
-        prompt = _build_track_guess_prompt(
-            locked_album_ctx=locked_album_ctx,
-            side_tracklist=side_tracklist,
-            recent_history=recent_history,
-            audible_up_iso=audible_up_iso,
-            elapsed_since_audible_up_s=elapsed_since_audible_up_s,
-            elapsed_since_last_confirm_s=elapsed_since_last_confirm_s,
-            predicted_position=predicted_position,
-            estimated_side_position_s=estimated_side_position_s,
-            likely_flip=likely_flip,
-            next_side_first=next_side_first,
-        )
-        verdict = await self._invoke(
-            "judge_track_guess",
-            prompt,
-            _parse_track_guess,
-            tool_spec=_TRACK_GUESS_TOOL_SPEC,
         )
         return verdict
 

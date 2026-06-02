@@ -6,7 +6,6 @@ heuristics at four cascade decision points with LLM judgments:
   - `judge_shazam_result`   — cover/tribute/sample relevance filter
   - `judge_advance`         — end-of-side advance under tracklist-aware fallback
   - `rank_releases`         — /identify Discogs release ranker
-  - `judge_track_guess`     — confirm-first guess on Shazam-miss + fp-miss
 
 When the key is unset, every method returns the `USE_HEURISTIC`
 sentinel and the orchestrator uses today's hardcoded logic. The
@@ -56,12 +55,6 @@ from nowplaying.llm.track_change import (
     _build_track_change_prompt,
     _parse_track_change,
 )
-from nowplaying.llm.track_guess import (
-    TrackGuess,
-    _TRACK_GUESS_TOOL_SPEC,
-    _build_track_guess_prompt,
-    _parse_track_guess,
-)
 
 __all__ = [
     "AdvanceVerdict",
@@ -73,21 +66,17 @@ __all__ = [
     "ShazamVerdict",
     "TIMEOUT_S",
     "TrackChangeVerdict",
-    "TrackGuess",
     "USE_HEURISTIC",
     "log",
     "_ADVANCE_TOOL_SPEC",
     "_RANK_RELEASES_TOOL_SPEC",
     "_SHAZAM_TOOL_SPEC",
     "_TRACK_CHANGE_TOOL_SPEC",
-    "_TRACK_GUESS_TOOL_SPEC",
     "_build_advance_prompt",
     "_build_rank_releases_prompt",
     "_build_shazam_prompt",
     "_build_track_change_prompt",
-    "_build_track_guess_prompt",
     "_extract_tool_input",
     "_parse_release_ranking",
     "_parse_track_change",
-    "_parse_track_guess",
 ]
