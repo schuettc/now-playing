@@ -554,9 +554,13 @@ def test_pending_guess_attached_at_publish_time():
         "match_method": "unmatched",
     }
     result = orch._anchor_and_publish(payload)
+    # The guess is enriched with the backend contract (epic
+    # consolidate-guess-confidence-lifetime / C2): NEEDS_ID has no duration
+    # → expires_in_s None; an unmatched now-playing → confirmable True.
     assert result["guess"] == {
         "position": "A3", "title": "Passover",
         "confidence": "low", "source": "heuristic",
+        "expires_in_s": None, "confirmable": True,
     }
     assert orch.state.pending_guess is None, "must clear after consumption"
 

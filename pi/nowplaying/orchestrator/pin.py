@@ -65,6 +65,22 @@ def _pin_in_decay(pin: dict, now_mono: float) -> bool:
     return decay_start <= elapsed <= (duration + PIN_TTL_BUFFER_S)
 
 
+def _confidence_for_remaining(remaining: float, total: float) -> str:
+    """Confidence for ``remaining`` seconds left out of a ``total``-second hold:
+    'high' until the final bounded decay window (min(LOCK_DECAY_WINDOW_S,
+    total/2)), then 'medium' → 'low' as it runs out. The single confidence
+    core shared by locks and guesses (epic consolidate-guess-confidence-lifetime
+    / C1): a lock passes (remaining, hold), a guess passes (track-remaining,
+    track-duration)."""
+    decay = _effective_decay_window_s(total)
+    if remaining > decay:
+        return "high"
+    if decay <= 0:
+        return "low"
+    frac = 1.0 - max(0.0, remaining) / decay  # 0 at window start → 1 at end
+    return "medium" if frac < 0.5 else "low"
+
+
 def _pin_confidence(pin: dict, now_mono: float) -> str:
     """Confidence the lock places on its current track: 'high' during the hard
     hold, ramping 'medium' then 'low' across the (bounded) decay window. 'high'
@@ -72,15 +88,8 @@ def _pin_confidence(pin: dict, now_mono: float) -> str:
     duration = pin.get("duration_seconds")
     if duration is None:
         return "high"
-    elapsed = now_mono - pin["monotonic_ts"]
-    decay = _effective_decay_window_s(duration)
-    decay_start = duration - decay
-    if elapsed < decay_start:
-        return "high"
-    if decay <= 0:
-        return "low"
-    frac = (elapsed - decay_start) / decay  # 0 → 1 across the window
-    return "medium" if frac < 0.5 else "low"
+    remaining = duration - (now_mono - pin["monotonic_ts"])
+    return _confidence_for_remaining(remaining, duration)
 
 
 def _remaining_and_confidence(
@@ -104,8 +113,7 @@ def _remaining_and_confidence(
     if duration_seconds is None:
         return (None, "high")
     remaining = float(duration_seconds) - (now_mono - monotonic_ts)
-    obj = {"monotonic_ts": monotonic_ts, "duration_seconds": duration_seconds}
-    return (remaining, _pin_confidence(obj, now_mono))
+    return (remaining, _confidence_for_remaining(remaining, float(duration_seconds)))
 
 
 def compute_pin_duration(

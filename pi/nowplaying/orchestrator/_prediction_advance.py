@@ -11,10 +11,10 @@ import logging
 from typing import TYPE_CHECKING
 
 from nowplaying import catalog as catalog_dispatch, history
-from nowplaying.orchestrator.advance import _compute_advance_elapsed_s
 from nowplaying.orchestrator.prediction import (
     _advance_predicted_position,
     _build_predicted_payload,
+    enrich_guess_contract,
 )
 
 if TYPE_CHECKING:
@@ -50,6 +50,7 @@ class _AdvanceMixin:
             "confidence": "medium",
             "source": "heuristic",
         }
+        enrich_guess_contract(payload)
         await broadcaster.publish(self._anchor_and_publish(payload))
         try:
             await history.record_play(payload)
@@ -168,6 +169,7 @@ class _AdvanceMixin:
             "confidence": "medium",
             "source": "heuristic",
         }
+        enrich_guess_contract(payload)
         log.info(
             "predicted: advanced to side=%s position=%s title=%r",
             advanced["side"], advanced["track_position"],

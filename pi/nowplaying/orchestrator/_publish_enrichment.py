@@ -15,7 +15,7 @@ from urllib.parse import urlencode
 
 import recognize_proto
 
-from nowplaying import art_overrides, history
+from nowplaying import art_overrides
 from nowplaying.discogs import catalog as discogs_catalog
 from nowplaying.sonos.listener import poll_queue, poll_track
 from nowplaying.vinyl import fingerprint as _fp
@@ -23,6 +23,7 @@ from nowplaying.orchestrator.streaming_idle import (
     HEARTBEAT_INTERVAL_S,
     RECOGNITION_LEAD_S,
 )
+from nowplaying.orchestrator.prediction import enrich_guess_contract
 
 log = logging.getLogger("nowplaying.main")
 
@@ -110,6 +111,7 @@ class PublishEnrichmentMixin:
         # position yet — NEEDS_ID payloads). Otherwise drop silently.
         if published_pos is None or guess_pos == published_pos:
             payload["guess"] = state.pending_guess
+            enrich_guess_contract(payload)
         state.pending_guess = None
 
     def _adopt_heuristic_anchor(self, payload: dict, identity: tuple) -> None:
@@ -360,7 +362,6 @@ class PublishEnrichmentMixin:
         the vinyl path. AirPlay-without-metadata also falls through to
         the audio path. TV / radio push their own events.
         """
-        state = self.state
         stop = self.stop
         sonos_coord = self.sonos_coord
         if sonos_coord is None:
