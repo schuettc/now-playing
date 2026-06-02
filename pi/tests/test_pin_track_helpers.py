@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import sys
-import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -25,7 +24,6 @@ from nowplaying.control.pin_track import (  # noqa: E402
     _apply_pin_state,
     _apply_pin_to_locked,
     _parse_pin_request_body,
-    _prior_track_end_iso,
     _resolve_pin_match,
     _validate_pin_lock,
 )
@@ -263,7 +261,7 @@ def test_apply_pin_to_locked_uses_request_pos_when_matched_lacks_position() -> N
     assert locked["track_position"] == "A1"
 
 
-# ── _apply_pin_state predicted-advance backdate ──────────────────────
+# ── _apply_pin_state (scaling-lock plumbing) ─────────────────────────
 
 
 def _patched_loop():
@@ -274,150 +272,73 @@ def _patched_loop():
     return patch.object(asyncio, "get_running_loop", lambda: fake_loop)
 
 
-def _pin_state(locked, *, predicted_position=None, track_started_at="now"):
-    """Minimal state stub for _apply_pin_state on the is_different_track,
-    first_miss_offset=None path."""
+def _pin_state(locked, *, user_track_pin=None, last_pin_unix_ts=None):
+    """Minimal state stub for _apply_pin_state. The scaling-lock model derives
+    the hold inside _apply_user_track_pin (mocked here), so this stub only
+    needs the fields _apply_pin_state itself reads/captures."""
     s = MagicMock()
     s.last_vinyl = locked
-    s.track_started_at = track_started_at
-    s.predicted_position = predicted_position
-    # No first-miss timestamp → _first_miss_initial_position_s returns None.
-    s.last_unmatched_after_match_unix_ts = None
-    s.last_pin_unix_ts = None
-    s.user_track_pin = None
+    s.predicted_position = {"track_position": "C99"}  # stale; must be cleared
+    s.last_pin_unix_ts = last_pin_unix_ts
+    s.user_track_pin = user_track_pin
     return s
 
 
-def test_apply_pin_state_uses_predicted_started_at_when_no_first_miss() -> None:
-    """Different-track pin, no first-miss boundary, but a predicted-advance
-    hint exists for the pinned position → pin TTL uses the stamped
-    track_started_at (known-elapsed path), NOT None (full-duration path).
-
-    Regression: docs/features/advance-on-shazam-quiet-records/. Without
-    this the pin gets the full duration from the tap and outlives its own
-    track, suppressing the next predicted-advance.
-    """
-    locked = {"release_id": 100, "track_position": "C10", "side": "C"}
-    predicted = {
-        "release_id": 100,
-        "track_position": "C11",
-        "side": "C",
-        "track_started_at": "2026-05-29T12:00:00Z",
+def test_apply_pin_state_clears_prediction_and_plumbs_applied_ttl() -> None:
+    """_apply_pin_state reports the TTL the pin actually received (read back
+    from state.user_track_pin after _apply_user_track_pin), not a separately
+    recomputed value — and clears any stale prediction."""
+    locked = {
+        "release_id": 100, "track_position": "C10", "side": "C",
+        "tracklist": [{"position": "C11", "duration_seconds": 200}],
     }
     matched = {"position": "C11", "title": "Leo", "duration_seconds": 200, "side": "C"}
-    state = _pin_state(locked, predicted_position=predicted)
-    with _patched_loop(), patch("nowplaying.control.pin_track._apply_user_track_pin"):
+
+    def _fake_apply(state, rid, pos, m):
+        state.user_track_pin = {"duration_seconds": 155}
+
+    state = _pin_state(locked)
+    with _patched_loop(), patch(
+        "nowplaying.control.pin_track._apply_user_track_pin", side_effect=_fake_apply,
+    ):
         result = _apply_pin_state(state, locked, 100, matched, "C11")
-    assert result.pin_track_started_at == "2026-05-29T12:00:00Z"
-    # predicted_position is still cleared after consumption.
+    assert result.pin_ttl_seconds == 155
+    assert result.canonical_pos == "C11"
     assert state.predicted_position is None
 
 
-def test_apply_pin_state_falls_back_to_none_when_no_predicted_hint() -> None:
-    """Different-track pin, no first-miss boundary, no predicted hint →
-    fresh-start path (pin_track_started_at is None / full-duration TTL)."""
-    locked = {"release_id": 100, "track_position": "C10", "side": "C"}
-    matched = {"position": "C11", "title": "Leo", "duration_seconds": 200, "side": "C"}
-    state = _pin_state(locked, predicted_position=None)
-    with _patched_loop(), patch("nowplaying.control.pin_track._apply_user_track_pin"):
-        result = _apply_pin_state(state, locked, 100, matched, "C11")
-    assert result.pin_track_started_at is None
-
-
-def test_apply_pin_state_ignores_predicted_hint_for_different_position() -> None:
-    """A predicted-advance hint for a DIFFERENT position than the one being
-    pinned must not be consumed — fall back to the fresh-start path."""
-    locked = {"release_id": 100, "track_position": "C10", "side": "C"}
-    predicted = {
-        "release_id": 100,
-        "track_position": "C12",  # not the pinned position
-        "side": "C",
-        "track_started_at": "2026-05-29T12:00:00Z",
-    }
-    matched = {"position": "C11", "title": "Leo", "duration_seconds": 200, "side": "C"}
-    state = _pin_state(locked, predicted_position=predicted)
-    with _patched_loop(), patch("nowplaying.control.pin_track._apply_user_track_pin"):
-        result = _apply_pin_state(state, locked, 100, matched, "C11")
-    assert result.pin_track_started_at is None
-
-
-# ── _prior_track_end_iso (chained-pin start) ─────────────────────────
-
-
-def test_prior_track_end_iso_returns_prior_end_when_in_past() -> None:
-    prior_start_unix = int(time.time()) - 300  # 5 min ago
-    prior_start_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(prior_start_unix))
-    tracklist = [{"position": "C10", "duration_seconds": 120}]
-    expected = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(prior_start_unix + 120))
-    assert _prior_track_end_iso(prior_start_iso, tracklist, "C10") == expected
-
-
-def test_prior_track_end_iso_none_when_end_in_future() -> None:
-    """Prior track's nominal end is still ahead (user confirmed early) →
-    durations disagree with reality, so don't invent an elapsed."""
-    prior_start_unix = int(time.time()) - 10
-    prior_start_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(prior_start_unix))
-    tracklist = [{"position": "C10", "duration_seconds": 600}]
-    assert _prior_track_end_iso(prior_start_iso, tracklist, "C10") is None
-
-
-def test_prior_track_end_iso_none_on_missing_inputs() -> None:
-    tracklist = [{"position": "C10", "duration_seconds": 120}]
-    assert _prior_track_end_iso(None, tracklist, "C10") is None
-    assert _prior_track_end_iso("2026-05-30T00:00:00Z", None, "C10") is None
-    assert _prior_track_end_iso("2026-05-30T00:00:00Z", tracklist, None) is None
-    # position not in tracklist
-    assert _prior_track_end_iso("2026-05-30T00:00:00Z", tracklist, "C99") is None
-    # duration unknown for the prior position
-    assert _prior_track_end_iso(
-        "2026-05-30T00:00:00Z", [{"position": "C10"}], "C10",
-    ) is None
-
-
-def test_apply_pin_state_chains_from_prior_track_end_when_no_hints() -> None:
-    """Different-track pin, no first-miss, no predicted hint, but the prior
-    track's start + duration are known → pin TTL anchors to the prior track's
-    end (when this track began), not full-duration-from-tap.
-
-    Regression: docs/features/advance-on-shazam-quiet-records/. This is the
-    chained-pin case on a Shazam-quiet side, where predicted-advance was
-    suppressed by the prior pin so no prediction backdate exists.
-    """
-    prior_start_unix = int(time.time()) - 300  # C10 started 5 min ago
-    prior_start_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(prior_start_unix))
-    expected = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(prior_start_unix + 120))
+def test_apply_pin_state_captures_prior_pin_before_clobber() -> None:
+    """The prior pin's unix ts and duration are captured BEFORE
+    _apply_user_track_pin runs, so the backfill scheduler sees the prior
+    values rather than the just-applied pin's."""
     locked = {
-        "release_id": 100,
-        "track_position": "C10",
-        "side": "C",
-        "tracklist": [
-            {"position": "C10", "duration_seconds": 120},
-            {"position": "C11", "duration_seconds": 200},
-        ],
+        "release_id": 100, "track_position": "C10", "side": "C",
+        "tracklist": [{"position": "C11", "duration_seconds": 200}],
     }
     matched = {"position": "C11", "title": "Leo", "duration_seconds": 200, "side": "C"}
-    state = _pin_state(locked, predicted_position=None, track_started_at=prior_start_iso)
+    state = _pin_state(
+        locked, user_track_pin={"duration_seconds": 99}, last_pin_unix_ts=4242,
+    )
     with _patched_loop(), patch("nowplaying.control.pin_track._apply_user_track_pin"):
         result = _apply_pin_state(state, locked, 100, matched, "C11")
-    assert result.pin_track_started_at == expected
-    assert state.track_started_at == expected
+    assert result.prior_pin_unix_ts == 4242
+    assert result.prior_pin_duration_seconds == 99
 
 
-def test_apply_pin_state_chained_fallback_when_prior_end_in_future() -> None:
-    """Prior track's nominal end is still ahead → fall back to full-duration
-    (None), matching the pre-existing no-hint behaviour."""
-    prior_start_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(int(time.time()) - 5))
+def test_apply_pin_state_passes_no_backdate_to_pin() -> None:
+    """The scaling lock must not be handed a dead-reckoned backdate:
+    _apply_pin_state calls _apply_user_track_pin positionally with no
+    reliable_position_s / track_started_at_iso kwargs."""
     locked = {
-        "release_id": 100,
-        "track_position": "C10",
-        "side": "C",
-        "tracklist": [
-            {"position": "C10", "duration_seconds": 600},
-            {"position": "C11", "duration_seconds": 200},
-        ],
+        "release_id": 100, "track_position": "C10", "side": "C",
+        "tracklist": [{"position": "C11", "duration_seconds": 200}],
     }
     matched = {"position": "C11", "title": "Leo", "duration_seconds": 200, "side": "C"}
-    state = _pin_state(locked, predicted_position=None, track_started_at=prior_start_iso)
-    with _patched_loop(), patch("nowplaying.control.pin_track._apply_user_track_pin"):
-        result = _apply_pin_state(state, locked, 100, matched, "C11")
-    assert result.pin_track_started_at is None
+    state = _pin_state(locked)
+    with _patched_loop(), patch(
+        "nowplaying.control.pin_track._apply_user_track_pin",
+    ) as mock_pin:
+        _apply_pin_state(state, locked, 100, matched, "C11")
+    _, kwargs = mock_pin.call_args
+    assert "track_started_at_iso" not in kwargs
+    assert "reliable_position_s" not in kwargs

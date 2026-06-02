@@ -7,7 +7,7 @@ import time
 from datetime import datetime
 
 from nowplaying import art_cache
-from nowplaying.orchestrator.pin import compute_pin_duration
+from nowplaying.orchestrator.pin import ASSUMED_LOCK_POSITION_S, MIN_PIN_TTL_S
 
 log = logging.getLogger("nowplaying.control")
 
@@ -167,7 +167,7 @@ def _estimate_initial_track_position_s(
     Used by pin-driven coverage promotion to tag fingerprint refs at
     correct positions within the track audio.
 
-    Estimation order:
+    Estimation order (reliable cues only — never dead-reckoned drift):
     1. Fingerprint anchor on the SAME track being pinned: extrapolate
        from the anchor's last matched ref position. Most authoritative
        since the position comes from real fp_refs data.
@@ -175,8 +175,11 @@ def _estimate_initial_track_position_s(
        silent edge since, no different-track recognition): use the
        audible-edge backdate. Safe because audio context contains
        only this one track.
-    3. Cold-start fallback: 0.0. Treats click as track-start. Pin
-       coverage proceeds forward from click time.
+    3. Shazam first-miss after a recent confirm.
+
+    Returns ``None`` when no cue exists, so each caller picks its own default:
+    ref-tagging assumes track-start (0.0); the lock hold assumes
+    ``ASSUMED_LOCK_POSITION_S``.
     """
     anchor_pos = _anchor_position_s(state, release_id, track_position, now_mono)
     if anchor_pos is not None:
@@ -187,7 +190,7 @@ def _estimate_initial_track_position_s(
     first_miss = _first_miss_initial_position_s(state)
     if first_miss is not None:
         return first_miss
-    return 0.0
+    return None
 
 
 def _audible_edge_unix_ts(state) -> int | None:
@@ -256,27 +259,55 @@ def _apply_user_track_pin(
     rid: int,
     pos: str,
     matched: dict,
-    track_started_at_iso: str | None = None,
+    reliable_position_s: float | None = None,
 ) -> None:
     """Set ``state.user_track_pin`` for a user-confirmed track identity.
 
     Shared by ``identify_clip`` (full search flow) and ``pin_track``
     (locked-album fast path).  Keeps the pin shape single-sourced.
 
-    ``track_started_at_iso`` is the ISO-8601 timestamp of when the current
-    track started playing (``state.track_started_at``).  When supplied,
-    the pin's effective TTL duration is computed from the *remaining* track
-    time rather than the full duration — see ``compute_pin_duration``.
-    Pass ``None`` (or omit) when the track start time is not known; the
-    helper will fall back to a conservative safety-margin default.
+    A manual lock is authoritative but *scaling*: its hold is derived from an
+    estimate of where in the track the user locked, using reliable cues only.
+    Priority for that position:
+
+      1. ``reliable_position_s`` — a caller-supplied authoritative position
+         (``identify`` passes the fresh-side audible-edge elapsed, which has
+         no age cap). Pass ``None`` when the caller has no such cue.
+      2. ``_estimate_initial_track_position_s`` — fingerprint anchor /
+         capped audible-edge / Shazam first-miss.
+      3. ``ASSUMED_LOCK_POSITION_S`` — no cue at all; assume the user locked
+         a bit into the song rather than at t=0.
+
+    Drift-prone dead-reckoning backdates (predicted-advance start, prior-track
+    chaining) are deliberately NOT consulted — they can only shorten a lock,
+    which is the failure mode this scaling model replaces. The hold is
+    ``duration − lock_position`` (floored at ``MIN_PIN_TTL_S``); it decays over
+    its final ``LOCK_DECAY_WINDOW_S`` rather than ending on a hard cliff (see
+    ``pin._pin_in_decay`` / ``pin._pin_confidence``).
     """
-    duration = compute_pin_duration(
-        matched.get("duration_seconds"),
-        track_started_at_iso,
-    )
     now_mono = asyncio.get_running_loop().time()
-    initial_track_position_s = _estimate_initial_track_position_s(
-        state, rid, pos, now_mono,
+    est = (
+        reliable_position_s
+        if reliable_position_s is not None
+        else _estimate_initial_track_position_s(state, rid, pos, now_mono)
+    )
+    track_dur = matched.get("duration_seconds")
+    # Ref-tagging assumes track-start when there's no cue (forward coverage);
+    # the lock hold assumes the user locked a bit in — but never "almost over".
+    # Cap the assumption at a third of the track so locking a short track (or
+    # one that just started) doesn't assume it's nearly done and collapse the
+    # hold. See docs/features/advance-on-shazam-quiet-records/.
+    initial_track_position_s = est if est is not None else 0.0
+    if est is not None:
+        lock_position_s = est
+    elif track_dur is not None:
+        lock_position_s = min(float(ASSUMED_LOCK_POSITION_S), float(track_dur) / 3.0)
+    else:
+        lock_position_s = float(ASSUMED_LOCK_POSITION_S)
+    duration = (
+        None
+        if track_dur is None
+        else max(MIN_PIN_TTL_S, int(round(track_dur - lock_position_s)))
     )
     state.user_track_pin = {
         "release_id": rid,
@@ -291,6 +322,13 @@ def _apply_user_track_pin(
         "initial_track_position_s": initial_track_position_s,
     }
     state.pin_different_track_streak = 0
+    # Anchor track_started_at to the SAME lock position the hold uses, so when
+    # the lock decays at its expected track-end the predicted-advance path
+    # (which reads track_started_at) agrees the track is ending instead of
+    # re-suppressing from a stale "just started now" elapsed.
+    state.track_started_at = time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - lock_position_s),
+    )
     # A manual identify IS a recognition — record it in session memory just
     # like a Shazam/fingerprint confirm does. Without this, on a Shazam-quiet
     # side (user identifies A1, no Shazam hit) the set stays empty, so when A2

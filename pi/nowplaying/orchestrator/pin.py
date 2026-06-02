@@ -26,6 +26,61 @@ ANCHOR_TTL_BUFFER_S = 15
 PIN_SAFETY_MARGIN_S = 30
 # Floor so a pin set near the end of a track still survives at least this long.
 MIN_PIN_TTL_S = 30
+# Scaling-lock model. A manual lock is authoritative: its hold is derived from
+# an estimate of where in the track the user locked (reliable cues only —
+# fingerprint anchor / fresh-side audible-edge / Shazam first-miss), defaulting
+# to a duration-capped assumed position when no cue exists (users typically
+# lock a song a bit after it starts, but never "almost over" — so the assumption
+# is min(ASSUMED_LOCK_POSITION_S, duration/3), see _apply_user_track_pin).
+# Drift-prone dead-reckoning backdates never shorten a manual lock. As the
+# lock's expected track-end approaches, its confidence decays over a window
+# rather than ending on a hard cliff — advance opens up gradually and a
+# different-track recognition overrides at any point. The decay window never
+# consumes more than half the hold, so even a short or floored lock keeps a
+# confident hard-hold first (see _effective_decay_window_s).
+# See docs/features/advance-on-shazam-quiet-records/.
+ASSUMED_LOCK_POSITION_S = 45
+LOCK_DECAY_WINDOW_S = 45
+
+
+def _effective_decay_window_s(duration: float) -> float:
+    """The decay window for a hold of ``duration`` seconds: ``LOCK_DECAY_WINDOW_S``,
+    but never more than half the hold. Without this cap a short or floored hold
+    (duration <= LOCK_DECAY_WINDOW_S) would be born entirely inside its decay
+    window — providing zero confident hard-hold, so a manual lock on a short
+    track wouldn't actually hold. See docs/features/advance-on-shazam-quiet-records/."""
+    return min(float(LOCK_DECAY_WINDOW_S), duration / 2.0)
+
+
+def _pin_in_decay(pin: dict, now_mono: float) -> bool:
+    """True when the pin is within the final (bounded) decay window of its hold —
+    the soft zone where confidence ramps down and predicted-advance is allowed
+    (but the track is still shown). False before the window (hard hold) and
+    after expiry. Always False when the pin has no duration."""
+    duration = pin.get("duration_seconds")
+    if duration is None:
+        return False
+    elapsed = now_mono - pin["monotonic_ts"]
+    decay_start = duration - _effective_decay_window_s(duration)
+    return decay_start <= elapsed <= (duration + PIN_TTL_BUFFER_S)
+
+
+def _pin_confidence(pin: dict, now_mono: float) -> str:
+    """Confidence the lock places on its current track: 'high' during the hard
+    hold, ramping 'medium' then 'low' across the (bounded) decay window. 'high'
+    when the pin has no duration (open-ended hold)."""
+    duration = pin.get("duration_seconds")
+    if duration is None:
+        return "high"
+    elapsed = now_mono - pin["monotonic_ts"]
+    decay = _effective_decay_window_s(duration)
+    decay_start = duration - decay
+    if elapsed < decay_start:
+        return "high"
+    if decay <= 0:
+        return "low"
+    frac = (elapsed - decay_start) / decay  # 0 → 1 across the window
+    return "medium" if frac < 0.5 else "low"
 
 
 def compute_pin_duration(
@@ -127,6 +182,16 @@ def _evaluate_user_pin(
     if pinned_pos == hit_pos:
         return ("honor", 0, "same_position")
     new_streak = streak + 1
-    if new_streak >= PIN_DIFFERENT_TRACK_RELEASE_STREAK:
+    # Confidence decay: the streak needed to override the lock with a
+    # different same-release track shrinks as the lock nears its expected end.
+    # During the confident hold a single cross-track hit can't flip the lock
+    # (PIN_DIFFERENT_TRACK_RELEASE_STREAK corroborations); in the decay window
+    # a different-track recognition takes over after fewer hits.
+    threshold = {
+        "high": PIN_DIFFERENT_TRACK_RELEASE_STREAK,
+        "medium": 2,
+        "low": 1,
+    }[_pin_confidence(pin, now_mono)]
+    if new_streak >= threshold:
         return ("clear", 0, "streak_exceeded")
     return ("honor", new_streak, "different_position")

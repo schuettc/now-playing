@@ -70,22 +70,23 @@ def _apply_identify_payload_overrides(
 
 
 def _apply_identify_state(
-    state, payload: dict, rid: int, pos: str, matched: dict, now_iso: str,
+    state, payload: dict, rid: int, pos: str, matched: dict,
 ) -> None:
     """Mutate orchestrator state to reflect a user-identified track.
 
     When this is the first track of a fresh side, the audible-edge bounds
-    the track's true start, so the pin's TTL is computed from that edge
-    (the known-elapsed path) rather than from click time. A user often
-    identifies a track that has already been playing for some seconds; if
-    the pin used the full duration measured from the click, it would
-    outlive the real track end by that offset — freezing predicted-advance
-    and letting pin-driven coverage promotion capture the *next* track's
-    audio under this track's label. See
-    docs/features/advance-on-shazam-quiet-records/.
+    the track's true start, so its elapsed is passed as the authoritative
+    lock position — the pin's hold scales from it rather than from click
+    time. A user often identifies a track that has already been playing for
+    some seconds; without this the lock would outlive the real track end by
+    that offset, freezing predicted-advance and letting pin-driven coverage
+    promotion capture the *next* track's audio under this track's label.
+    See docs/features/advance-on-shazam-quiet-records/.
 
     For tracks 2+ on a side (gate fails) there is no reliable start signal,
-    so we fall back to ``now_iso`` / full duration as before.
+    so the pin falls back to its own reliable-cue estimate / assumed
+    position (see ``_apply_user_track_pin``), which also sets
+    ``state.track_started_at``.
     """
     state.last_vinyl = payload
     state.last_vinyl_confidence_set_at = asyncio.get_running_loop().time()
@@ -97,14 +98,11 @@ def _apply_identify_state(
     # is not rejected.
     fresh_first_track = _is_fresh_side_first_track_for_pin(state, rid, pos)
     edge_ts = _audible_edge_unix_ts(state) if fresh_first_track else None
-    track_started_at_iso = (
-        time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(edge_ts))
-        if edge_ts is not None
-        else None
+    reliable_position_s = (
+        max(0.0, time.time() - edge_ts) if edge_ts is not None else None
     )
-    state.track_started_at = track_started_at_iso or now_iso
     _apply_user_track_pin(
-        state, rid, pos, matched, track_started_at_iso=track_started_at_iso,
+        state, rid, pos, matched, reliable_position_s=reliable_position_s,
     )
     # Retroactive coverage backfill — only fire for the first track of
     # a fresh side, where the audible-edge bounds a single track. For
@@ -166,7 +164,7 @@ async def identify_clip(request: web.Request) -> web.Response:
     payload = _build_identify_payload(rel, rid, pos, matched, "user-identified")
     now_iso = _now_iso()
     _apply_identify_payload_overrides(payload, state, matched, now_iso)
-    _apply_identify_state(state, payload, rid, pos, matched, now_iso)
+    _apply_identify_state(state, payload, rid, pos, matched)
 
     log.info(
         "identify: release=%s pos=%s title=%r duration=%s (pin set)",
