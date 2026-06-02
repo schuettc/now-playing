@@ -11,7 +11,7 @@ import requests
 from nowplaying._io_safe import safe_write_bytes
 
 from ._db import ART_DIR, DATA_DIR, REPO_ROOT, log, now_iso
-from ._enrich import _maybe_enrich_durations
+from ._enrich import _maybe_enrich_durations, clean_release_titles
 from ._helpers import (
     _parse_discogs_duration,
     iter_leaf_tracks,
@@ -71,6 +71,11 @@ def fetch_detail(con: sqlite3.Connection, client: discogs_client.Client, release
             "INSERT OR REPLACE INTO tracks (release_id, position, side, title, duration_seconds, is_suite_parent) VALUES (?, ?, ?, ?, ?, 1)",
             (release_id, position, position_to_side(position), title, dur),
         )
+
+    # Title cleaning: strip remaster/mix annotations so clean_title holds
+    # the canonical title used by Last.fm aggregation and MusicBrainz matching.
+    # Runs before the duration backfill so Task 13 can match on clean_title.
+    clean_release_titles(con, release_id)
 
     # Duration enrichment: if Discogs left any track with a NULL duration,
     # try MusicBrainz as a fallback source. Same album, different provider.

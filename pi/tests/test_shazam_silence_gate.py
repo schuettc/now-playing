@@ -26,7 +26,7 @@ if str(_PI_ROOT) not in sys.path:
     sys.path.insert(0, str(_PI_ROOT))
 
 from nowplaying.main import (  # noqa: E402
-    SHAZAM_ONLY_MIN_LEVEL_DB,
+    MUSIC_DB,
     Orchestrator,
     State,
     _is_music_level,
@@ -81,24 +81,24 @@ _SHAZAM_RESULT = {
     "match_method": "shazam",
 }
 
-_SILENCE_LEVEL = SHAZAM_ONLY_MIN_LEVEL_DB - 5.0   # well below threshold (-37)
-_MUSIC_LEVEL = SHAZAM_ONLY_MIN_LEVEL_DB + 5.0     # well above threshold (-27)
+_SILENCE_LEVEL = MUSIC_DB - 5.0   # well below threshold (-35)
+_MUSIC_LEVEL = MUSIC_DB + 5.0     # well above threshold (-25)
 
 
 # ── 1. _is_music_level ────────────────────────────────────────────────────
 
 
 def test_is_music_level_below_threshold_is_false():
-    assert _is_music_level(SHAZAM_ONLY_MIN_LEVEL_DB - 0.1) is False
+    assert _is_music_level(MUSIC_DB - 0.1) is False
 
 
 def test_is_music_level_at_threshold_is_true():
-    """Boundary is inclusive: >= SHAZAM_ONLY_MIN_LEVEL_DB."""
-    assert _is_music_level(SHAZAM_ONLY_MIN_LEVEL_DB) is True
+    """Boundary is inclusive: >= MUSIC_DB."""
+    assert _is_music_level(MUSIC_DB) is True
 
 
 def test_is_music_level_above_threshold_is_true():
-    assert _is_music_level(SHAZAM_ONLY_MIN_LEVEL_DB + 0.1) is True
+    assert _is_music_level(MUSIC_DB + 0.1) is True
 
 
 def test_is_music_level_real_playback_level_is_true():
@@ -107,9 +107,9 @@ def test_is_music_level_real_playback_level_is_true():
 
 
 def test_is_music_level_deep_silence_is_false():
-    """Ambient line-in noise sits at -15 to -16 dB (right at the silence floor),
-    well below the music-level threshold."""
-    assert _is_music_level(-16.0) is False
+    """On the clean LINE signal the idle noise floor sits around -41 dB, well
+    below the music-level threshold (MUSIC_DB = -30)."""
+    assert _is_music_level(-40.0) is False
 
 
 # ── 2. Orchestrator._shazam_level_gate ────────────────────────────────────
@@ -132,9 +132,9 @@ def test_level_gate_passes_instant_clip_regardless_of_level(tmp_path):
 
 
 def test_level_gate_regular_clip_at_threshold_passes(tmp_path):
-    """Exactly at SHAZAM_ONLY_MIN_LEVEL_DB must pass."""
+    """Exactly at MUSIC_DB must pass."""
     clip = _regular_clip(tmp_path)
-    assert Orchestrator._shazam_level_gate(SHAZAM_ONLY_MIN_LEVEL_DB, clip) is True
+    assert Orchestrator._shazam_level_gate(MUSIC_DB, clip) is True
 
 
 # ── 3. Orchestrator._shazam_only_gate_passes ──────────────────────────────

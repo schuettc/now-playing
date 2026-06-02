@@ -72,7 +72,17 @@ export interface Guess {
   position: string;
   title: string;
   confidence: 'high' | 'medium' | 'low';
-  source: 'llm' | 'heuristic';
+  source: 'window' | 'heuristic' | 'llm';
+  /**
+   * Backend guess contract (epic consolidate-guess-confidence-lifetime).
+   * `expires_in_s`: seconds of the guessed track left — drives the confirm
+   * card's drain (null when duration unknown → fixed-fallback drain).
+   * `confirmable`: whether the kiosk should offer to confirm (the now-playing
+   * IS this guess, not a Shazam/fingerprint/user-confirmed track). The kiosk
+   * renders these; it does not re-derive them from match_method.
+   */
+  expires_in_s?: number | null;
+  confirmable?: boolean;
   alt?: { position: string; title: string };
 }
 

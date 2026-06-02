@@ -22,7 +22,7 @@ _PI_ROOT = Path(__file__).resolve().parents[1]
 if str(_PI_ROOT) not in sys.path:
     sys.path.insert(0, str(_PI_ROOT))
 
-from nowplaying.control.search import release_tracklist  # noqa: E402
+from nowplaying.control.search import _fetch_release_tracks, release_tracklist  # noqa: E402
 from nowplaying.discogs import catalog as discogs_catalog  # noqa: E402
 
 
@@ -52,6 +52,7 @@ def _in_memory_db(releases: list[int], tracks: list[tuple]):
         "  side TEXT,"
         "  title TEXT,"
         "  duration_seconds INTEGER,"
+        "  clean_title TEXT,"
         "  PRIMARY KEY (release_id, position)"
         ")"
     )
@@ -62,8 +63,8 @@ def _in_memory_db(releases: list[int], tracks: list[tuple]):
         )
     for row in tracks:
         con.execute(
-            "INSERT INTO tracks (release_id, position, side, title, duration_seconds) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO tracks (release_id, position, side, title, duration_seconds, clean_title) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
             row,
         )
     con.commit()
@@ -86,9 +87,9 @@ def _mk_request(release_id_str: str) -> web.Request:
 async def test_returns_tracks_for_known_release():
     """200: correct track shape for a release that exists with tracks."""
     track_rows = [
-        (100, "A1", "A", "First Track", 180),
-        (100, "A2", "A", "Second Track", 240),
-        (100, "B1", "B", "Third Track", None),
+        (100, "A1", "A", "First Track", 180, None),
+        (100, "A2", "A", "Second Track", 240, None),
+        (100, "B1", "B", "Third Track", None, None),
     ]
     with _in_memory_db(releases=[100], tracks=track_rows) as con:
         with patch.object(discogs_catalog, "open_ro", return_value=con):
@@ -164,3 +165,21 @@ async def test_400_for_empty_release_id():
     data = json.loads(resp.body)
     assert resp.status == 400
     assert data["ok"] is False
+
+
+def test_fetch_release_tracks_returns_clean_title():
+    """_fetch_release_tracks must include clean_title in each returned dict."""
+    track_rows = [
+        (42, "A1", "A", "Penny Lane (2017 Mix)", 180, "Penny Lane"),
+        (42, "A2", "A", "Strawberry Fields Forever", 240, None),
+    ]
+    with _in_memory_db(releases=[42], tracks=track_rows) as con:
+        result = _fetch_release_tracks(con, 42)
+
+    assert len(result) == 2
+    first = result[0]
+    assert first["title"] == "Penny Lane (2017 Mix)"
+    assert first["clean_title"] == "Penny Lane"
+    second = result[1]
+    assert second["title"] == "Strawberry Fields Forever"
+    assert second["clean_title"] is None

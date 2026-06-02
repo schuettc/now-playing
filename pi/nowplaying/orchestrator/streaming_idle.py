@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from nowplaying.vinyl.levels import MUSIC_DB
+
 if TYPE_CHECKING:
     from nowplaying.orchestrator.state import State
 
@@ -14,23 +16,13 @@ MAX_UNMATCHED_STREAK = 4
 # NEEDS_ID. Two consecutive misses = ~30s of confidently no-ID before
 # prompting the user to identify manually.
 NEEDS_ID_STREAK = 2
-# Threshold that distinguishes "real music we should try to ID" from
-# "ambient/noise we shouldn't bother with." Used in three places:
-#   - Gate on shazam-only (no Discogs) publishes (PR #23 false-positive fix)
-#   - Gate on NEEDS_ID transitions (PR #24 — only prompt for ID when audio
-#     is at music level)
-#   - Music-level idle retraction at the top of on_heartbeat
-#
-# Calibrated against the current -15 dB silence floor (capture_proto.py:84)
-# and live-observed levels on the canonical UFO202+preamp: real music sits
-# at -1 to -10 dB, ambient line-in noise sits at -15 to -16 dB (right at
-# the floor). -12 dB gives 3 dB clearance above ambient and includes the
-# quietest expected music intros (-10 dB). Previous value (-32 dB) was set
-# when the silence floor was -35 dB and let ambient noise crossing the
-# floor trip NEEDS_ID transitions while idle — see the 2026-05-27 live-
-# observation where the kiosk was flapping between clock and identify
-# every ~30s on threshold-edge ambient hum.
-SHAZAM_ONLY_MIN_LEVEL_DB = -12.0
+# MUSIC_DB (imported from vinyl/levels.py — the single source of truth for the
+# capture chain's level thresholds) distinguishes "real music we should try to
+# ID" from "ambient/noise we shouldn't bother with." Used to gate shazam-only
+# (no-Discogs) publishes, NEEDS_ID transitions, and music-level idle retraction
+# at the top of on_heartbeat. It is the upper hysteresis bound the capture gate
+# uses for its silent→audible flip, so "capture says audible" ⟺ "orchestrator
+# says music."
 
 # Capture heartbeat cadence in seconds. Must match capture_proto.py's
 # `--heartbeat-s` default. Used by the streak-seeded prediction path to
@@ -123,7 +115,7 @@ STRONG_FINGERPRINT_ANCHOR_MULTIPLIER = 0.5
 
 
 def _is_music_level(level_db: float) -> bool:
-    return level_db >= SHAZAM_ONLY_MIN_LEVEL_DB
+    return level_db >= MUSIC_DB
 
 
 def _should_arm_streaming_idle(

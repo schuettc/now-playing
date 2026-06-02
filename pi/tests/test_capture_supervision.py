@@ -124,7 +124,7 @@ def _make_fast_exit_run_capture(n_exits: int, stop: asyncio.Event) -> tuple[Asyn
     call_log: list[dict] = []
     count = 0
 
-    async def _fake_run_capture(on_clip, on_state, _stop, *, silence_db=None, start_paused=False):
+    async def _fake_run_capture(on_clip, on_state, _stop, *, silence_db=None, music_db=None, start_paused=False):
         nonlocal count
         count += 1
         call_log.append({"start_paused": start_paused, "call_n": count})
@@ -159,7 +159,7 @@ async def test_supervisor_stop_during_backoff_exits_cleanly():
     stop = asyncio.Event()
     call_count = 0
 
-    async def _fake_run_capture(on_clip, on_state, _stop, *, silence_db=None, start_paused=False):
+    async def _fake_run_capture(on_clip, on_state, _stop, *, silence_db=None, music_db=None, start_paused=False):
         nonlocal call_count
         call_count += 1
         # Return immediately (simulated death) — but don't set stop, so the
@@ -192,7 +192,7 @@ async def test_supervisor_pause_state_replay():
     spawn_records: list[bool] = []
     spawn_count = 0
 
-    async def _fake_run_capture(on_clip, on_state, _stop, *, silence_db=None, start_paused=False):
+    async def _fake_run_capture(on_clip, on_state, _stop, *, silence_db=None, music_db=None, start_paused=False):
         nonlocal spawn_count
         spawn_count += 1
         spawn_records.append(start_paused)
@@ -221,7 +221,7 @@ async def test_supervisor_stop_on_first_call_exits_cleanly():
     stop = asyncio.Event()
     call_count = 0
 
-    async def _fake_run_capture(on_clip, on_state, _stop, *, silence_db=None, start_paused=False):
+    async def _fake_run_capture(on_clip, on_state, _stop, *, silence_db=None, music_db=None, start_paused=False):
         nonlocal call_count
         call_count += 1
         stop.set()  # Simulate commanded stop
@@ -244,7 +244,7 @@ async def test_supervisor_backoff_reset_after_healthy_run():
     fake_time = 0.0
     spawn_count = 0
 
-    async def _fake_run_capture(on_clip, on_state, _stop, *, silence_db=None, start_paused=False):
+    async def _fake_run_capture(on_clip, on_state, _stop, *, silence_db=None, music_db=None, start_paused=False):
         nonlocal spawn_count, fake_time
         spawn_count += 1
         if spawn_count == 1:

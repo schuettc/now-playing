@@ -19,7 +19,6 @@ import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from aiohttp import web
 
 _PI_ROOT = Path(__file__).resolve().parents[1]
@@ -27,8 +26,8 @@ if str(_PI_ROOT) not in sys.path:
     sys.path.insert(0, str(_PI_ROOT))
 
 from nowplaying import control  # noqa: E402
-from nowplaying.main import MIN_PIN_TTL_S, PIN_SAFETY_MARGIN_S, State  # noqa: E402
-from nowplaying.orchestrator.pin import compute_pin_duration  # noqa: E402
+from nowplaying.main import MIN_PIN_TTL_S, State  # noqa: E402
+from nowplaying.orchestrator.pin import ASSUMED_LOCK_POSITION_S  # noqa: E402
 
 
 def _mk_request(state, body):
@@ -73,12 +72,10 @@ def _run(coro):
 
 
 def test_pin_track_happy_path_returns_canonical_payload():
-    """pin_ttl_seconds for a fresh-start pin equals the full track duration.
-
-    # Why: docs/features/pin-ttl-35s-phantom-elapsed/. Different-track pin
-    # routes through the fresh-start path (prior_track_started_at=None),
-    # which returns full duration. Old expectation (540 - 5 - 30 = 505)
-    # codified the 35s phantom-elapsed bug.
+    """pin_ttl_seconds is the scaling-lock hold: with no reliable position cue
+    the lock assumes ASSUMED_LOCK_POSITION_S into the track, so the hold is
+    duration − ASSUMED_LOCK_POSITION_S. See
+    docs/features/advance-on-shazam-quiet-records/.
     """
     state = State()
     state.last_vinyl = _locked_album()
@@ -92,11 +89,12 @@ def test_pin_track_happy_path_returns_canonical_payload():
     assert payload["track_position"] == "B3"
     assert payload["title"] == "Stem / Long Stem"
     assert payload["duration_seconds"] == 540
-    assert payload["pin_ttl_seconds"] == 540
+    assert payload["pin_ttl_seconds"] == 540 - ASSUMED_LOCK_POSITION_S
 
 
 def test_pin_track_sets_user_track_pin():
-    """Pin duration stored in state is the computed TTL (= full duration here)."""
+    """Pin duration stored in state is the scaling-lock hold (= full duration
+    minus the assumed lock position when no reliable cue exists)."""
     state = State()
     state.last_vinyl = _locked_album()
     state.pin_different_track_streak = 2
@@ -105,8 +103,7 @@ def test_pin_track_sets_user_track_pin():
     assert state.user_track_pin is not None
     assert state.user_track_pin["release_id"] == 100
     assert state.user_track_pin["track_position"] == "B3"
-    # Why: docs/features/pin-ttl-35s-phantom-elapsed/. Fresh-start pin = full duration.
-    assert state.user_track_pin["duration_seconds"] == 540
+    assert state.user_track_pin["duration_seconds"] == 540 - ASSUMED_LOCK_POSITION_S
     assert state.pin_different_track_streak == 0
 
 
@@ -281,30 +278,26 @@ def test_pin_track_falls_back_to_catalog_when_payload_tracklist_empty():
         resp = _run(control.pin_track(req))
     assert resp.status == 200
     assert state.user_track_pin["track_position"] == "B3"
-    # Why: docs/features/pin-ttl-35s-phantom-elapsed/. Fresh-start pin
-    # (different track than prior) → TTL is full duration, no phantom subtraction.
-    assert state.user_track_pin["duration_seconds"] == 540
+    # No reliable cue → scaling-lock hold = duration − assumed lock position.
+    assert state.user_track_pin["duration_seconds"] == 540 - ASSUMED_LOCK_POSITION_S
 
 
-# ---- remaining-time TTL tests (pin-ttl-remaining-time) ---------------
+# ---- scaling-lock hold tests (advance-on-shazam-quiet-records) -------
 
 
-def test_pin_ttl_uses_remaining_time_when_track_started_at_known():
-    """Pin TTL is computed from remaining time when track_started_at is set.
+def test_pin_ttl_ignores_track_started_at_drift():
+    """A manual lock must NOT be shortened by the dead-reckoned
+    state.track_started_at — only reliable position cues scale the hold.
 
-    Scenario: 180s track, user clicks 30s in.
-    Expected TTL: max(MIN_PIN_TTL_S, 180 - 30 - PIN_SAFETY_MARGIN_S) = max(30, 120) = 120s
-    Pin should expire around the track end, not 30s into the next track.
-
-    Use a fixed integer epoch so sub-second precision doesn't affect the ISO round-trip.
+    Scenario: 180s track, state.track_started_at says 30s ago (drift-prone).
+    With no reliable cue (no anchor / audible-edge / first-miss), the lock
+    assumes ASSUMED_LOCK_POSITION_S, so the hold is 180 − 45 = 135 —
+    independent of track_started_at.
     """
-    now_epoch = 1_600_000_000.0  # fixed epoch — no sub-second rounding
-    elapsed_at_click = 30  # user tapped 30s into the track
-    started_epoch = now_epoch - elapsed_at_click
-    started_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started_epoch))
-
     state = State()
-    state.track_started_at = started_iso
+    state.track_started_at = time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 30),
+    )
     tracklist = [{"position": "A1", "side": "A", "title": "Turntabled", "duration_seconds": 180}]
     state.last_vinyl = {
         "release_id": 42,
@@ -315,30 +308,21 @@ def test_pin_ttl_uses_remaining_time_when_track_started_at_known():
         "tracklist": tracklist,
     }
     req = _mk_request(state, {"release_id": 42, "track_position": "A1"})
-
-    # Freeze time.time() so compute_pin_duration sees the same epoch we computed above.
-    with patch("nowplaying.orchestrator.pin.time.time", return_value=now_epoch):
-        resp = _run(control.pin_track(req))
+    resp = _run(control.pin_track(req))
 
     import json
     payload = json.loads(resp.body.decode())
     assert resp.status == 200
-    # remaining = 180 - 30 - 30 = 120; max(30, 120) = 120
-    expected_ttl = max(MIN_PIN_TTL_S, 180 - elapsed_at_click - PIN_SAFETY_MARGIN_S)
+    expected_ttl = 180 - ASSUMED_LOCK_POSITION_S
     assert payload["pin_ttl_seconds"] == expected_ttl
     assert state.user_track_pin["duration_seconds"] == expected_ttl
     # Raw duration still reported in response body for display
     assert payload["duration_seconds"] == 180
 
 
-def test_pin_ttl_unknown_elapsed_returns_full_duration():
-    """When state.track_started_at is None, TTL = full duration.
-
-    # Why: docs/features/pin-ttl-35s-phantom-elapsed/. Old expectation
-    # (200 - 5 - 30 = 165) codified the 35s phantom-elapsed bug.
-    """
+def test_pin_ttl_assumes_lock_position_when_no_cue():
+    """With no reliable position cue, the hold = duration − assumed position."""
     state = State()
-    state.track_started_at = None  # cold state — no prior track start recorded
     state.last_vinyl = {
         "release_id": 42,
         "track_position": "A1",
@@ -352,22 +336,49 @@ def test_pin_ttl_unknown_elapsed_returns_full_duration():
     resp = _run(control.pin_track(req))
     import json
     payload = json.loads(resp.body.decode())
-    assert payload["pin_ttl_seconds"] == 200
+    assert payload["pin_ttl_seconds"] == 200 - ASSUMED_LOCK_POSITION_S
+
+
+def test_pin_ttl_assumed_position_capped_by_short_track_duration():
+    """Locking a short track must not assume it's almost over.
+
+    Regression for the live 'Lucky' case (48s track): a flat 45s assumption
+    made the hold 48-45=3 → floored to 30 and born entirely in the decay
+    window, so predicted-advance jumped immediately. The assumption is capped
+    at duration/3, so a 48s track assumes ~16s in → hold ≈ 32 (NOT floored).
+    See docs/features/advance-on-shazam-quiet-records/.
+    """
+    state = State()
+    state.last_vinyl = {
+        "release_id": 42,
+        "track_position": "A3",
+        "artist": "Local H",
+        "album": "Pack Up The Cats",
+        "tracklist": [
+            {"position": "A3", "side": "A", "title": "Lucky", "duration_seconds": 48},
+        ],
+    }
+    req = _mk_request(state, {"release_id": 42, "track_position": "A3"})
+    resp = _run(control.pin_track(req))
+    import json
+    payload = json.loads(resp.body.decode())
+    # lock_position = min(45, 48/3=16) = 16 → hold = 48 - 16 = 32 (above floor)
+    assert payload["pin_ttl_seconds"] == 32
+    assert state.user_track_pin["duration_seconds"] == 32
 
 
 def test_pin_ttl_floored_at_min_pin_ttl_near_end_of_track():
-    """A pin set near end of track is floored at MIN_PIN_TTL_S.
+    """A pin whose reliable cue lands near the track end is floored at
+    MIN_PIN_TTL_S.
 
-    Scenario: 90s track, user clicks 50s in.
-    remaining = 90 - 50 - 30 = 10 → floored to MIN_PIN_TTL_S (30s).
+    Scenario: 90s track, Shazam first-miss 70s ago (a reliable position cue).
+    hold = 90 − 70 = 20 → floored to MIN_PIN_TTL_S (30s).
     """
     now_epoch = 1_600_000_000.0  # fixed epoch — no sub-second rounding
-    elapsed_at_click = 50
-    started_epoch = now_epoch - elapsed_at_click
-    started_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started_epoch))
+    first_miss_at = int(now_epoch - 70)
 
     state = State()
-    state.track_started_at = started_iso
+    state.last_unmatched_after_match_unix_ts = first_miss_at
     state.last_vinyl = {
         "release_id": 42,
         "track_position": "A1",
@@ -379,12 +390,12 @@ def test_pin_ttl_floored_at_min_pin_ttl_near_end_of_track():
     }
     req = _mk_request(state, {"release_id": 42, "track_position": "A1"})
 
-    with patch("nowplaying.orchestrator.pin.time.time", return_value=now_epoch):
+    with patch("nowplaying.control._shared.time.time", return_value=now_epoch):
         resp = _run(control.pin_track(req))
 
     import json
     payload = json.loads(resp.body.decode())
-    # 90 - 50 - 30 = 10 → floored to 30
+    # 90 - 70 = 20 → floored to 30
     assert payload["pin_ttl_seconds"] == MIN_PIN_TTL_S
     assert state.user_track_pin["duration_seconds"] == MIN_PIN_TTL_S
 
@@ -436,14 +447,14 @@ def test_pin_after_predicted_advance_sets_initial_position_from_first_miss():
 
 
 def test_pin_after_predicted_advance_ttl_subtracts_initial_position():
-    """When pin lands after predicted-advance, pin TTL is reduced by the
-    elapsed estimate so the pin doesn't outlive the real track end.
+    """When pin lands after predicted-advance, the Shazam first-miss is a
+    reliable position cue, so the hold scales from it — the pin doesn't
+    outlive the real track end.
 
-    See docs/features/pin-ttl-ignores-initial-track-position/.
+    See docs/features/advance-on-shazam-quiet-records/.
 
-    Scenario: 540s track (B3), Shazam confirmed prior track 30s ago
-    (first miss), then user pinned. Pin TTL must reflect remaining
-    time: 540 - 30 - PIN_SAFETY_MARGIN_S = 480s.
+    Scenario: 540s track (B3), first miss 30s ago. hold = 540 − 30 = 510
+    (no safety margin — the decay window replaces it).
     """
     now_epoch = 1_700_000_000.0
     first_miss_at = int(now_epoch - 30)
@@ -452,20 +463,17 @@ def test_pin_after_predicted_advance_ttl_subtracts_initial_position():
     state.last_vinyl = _locked_album()
     state.last_unmatched_after_match_unix_ts = first_miss_at
     req = _mk_request(state, {"release_id": 100, "track_position": "B3"})
-    with patch("nowplaying.control._shared.time.time", return_value=now_epoch), \
-         patch("nowplaying.control.pin_track.time.time", return_value=now_epoch), \
-         patch("nowplaying.orchestrator.pin.time.time", return_value=now_epoch):
+    with patch("nowplaying.control._shared.time.time", return_value=now_epoch):
         resp = _run(control.pin_track(req))
 
     import json
     payload = json.loads(resp.body.decode())
     assert resp.status == 200
-    # 540 - 30 (elapsed) - 30 (safety margin) = 480
-    expected_ttl = max(MIN_PIN_TTL_S, 540 - 30 - PIN_SAFETY_MARGIN_S)
+    # 540 - 30 (reliable first-miss elapsed) = 510
+    expected_ttl = max(MIN_PIN_TTL_S, 540 - 30)
     assert payload["pin_ttl_seconds"] == expected_ttl, (
-        f"expected TTL ~{expected_ttl} (= 540 - 30 - margin); got "
-        f"{payload['pin_ttl_seconds']} (full duration means initial "
-        f"position was ignored)"
+        f"expected TTL ~{expected_ttl} (= 540 - 30); got "
+        f"{payload['pin_ttl_seconds']}"
     )
     assert state.user_track_pin["duration_seconds"] == expected_ttl
 

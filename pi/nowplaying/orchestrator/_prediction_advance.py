@@ -11,10 +11,10 @@ import logging
 from typing import TYPE_CHECKING
 
 from nowplaying import catalog as catalog_dispatch, history
-from nowplaying.orchestrator.advance import _compute_advance_elapsed_s
 from nowplaying.orchestrator.prediction import (
     _advance_predicted_position,
     _build_predicted_payload,
+    enrich_guess_contract,
 )
 
 if TYPE_CHECKING:
@@ -50,6 +50,7 @@ class _AdvanceMixin:
             "confidence": "medium",
             "source": "heuristic",
         }
+        enrich_guess_contract(payload)
         await broadcaster.publish(self._anchor_and_publish(payload))
         try:
             await history.record_play(payload)
@@ -146,6 +147,16 @@ class _AdvanceMixin:
             return False
         if track_started_at_override is not None:
             payload["track_started_at"] = track_started_at_override
+        # Stamp the back-dated start onto the prediction so a later pin on
+        # this track can derive an elapsed-aware TTL (known-elapsed path)
+        # instead of falling back to full-duration-from-tap. The override
+        # is the same value seeded onto the payload above; when no override
+        # was supplied, fall back to the payload's own start (the
+        # per-method RECOGNITION_LEAD_S back-date set by _build_predicted_payload).
+        # See docs/features/advance-on-shazam-quiet-records/.
+        advanced["track_started_at"] = (
+            track_started_at_override or payload.get("track_started_at")
+        )
         # Commit state + publish.
         state.predicted_position = advanced
         state.unmatched_streak = 0
@@ -158,6 +169,7 @@ class _AdvanceMixin:
             "confidence": "medium",
             "source": "heuristic",
         }
+        enrich_guess_contract(payload)
         log.info(
             "predicted: advanced to side=%s position=%s title=%r",
             advanced["side"], advanced["track_position"],

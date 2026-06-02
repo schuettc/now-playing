@@ -349,7 +349,7 @@ def test_pin_promotion_creates_task_with_correct_args(
     """Valid pin + clip → maybe_promote called with pin's release_id,
     pos, and elapsed-since-pin as track_position_s."""
     from nowplaying.vinyl import promotion as prom
-    from nowplaying.orchestrator.streaming_idle import SHAZAM_ONLY_MIN_LEVEL_DB
+    from nowplaying.orchestrator.streaming_idle import MUSIC_DB
     captured: dict = {}
 
     async def fake_maybe_promote(**kwargs):
@@ -369,7 +369,7 @@ def test_pin_promotion_creates_task_with_correct_args(
             "duration_seconds": None,
         }
         await orch_with_lock._schedule_coverage_promotion(
-            b"wavbytes", SHAZAM_ONLY_MIN_LEVEL_DB + 5.0,
+            b"wavbytes", MUSIC_DB + 5.0,
         )
         # Yield until the fire-and-forget task completes.
         for _ in range(50):
@@ -724,3 +724,36 @@ def test_confirmation_no_anchor_uses_overlay_path_with_correct_title(
         "Title must be looked up from tracklist using either 'position' or "
         "'track_position' key — was the dual-key fix applied to _build_fingerprint_payload?"
     )
+
+
+# ── matched track title (cleaning delegated to publish choke point) ──────
+
+
+def test_build_fingerprint_payload_uses_matched_track_title():
+    # Builder now returns the RAW matched title; _apply_clean_display_title
+    # at the publish choke point handles cleaning for display.
+    from nowplaying.orchestrator.fingerprint import _build_fingerprint_payload
+    locked_payload = {
+        "release_id": 1, "artist": "The Beatles", "album": "Blue",
+        "track_position": "A1", "title": "x",
+        "tracklist": [
+            {"position": "A2", "title": "Penny Lane (2017 Mix)",
+             "clean_title": "Penny Lane", "duration_seconds": 163},
+        ],
+    }
+    top = Hit(ref_id=1, release_id=1, track_position="A2", hits=80, track_position_s=0.0)
+    payload = _build_fingerprint_payload(locked_payload, top, "vinyl")
+    assert payload["title"] == "Penny Lane (2017 Mix)"
+    assert payload["duration_seconds"] == 163
+    assert payload["track_position"] == "A2"
+
+
+def test_build_fingerprint_payload_uses_raw_title_when_no_clean():
+    from nowplaying.orchestrator.fingerprint import _build_fingerprint_payload
+    locked_payload = {
+        "release_id": 1, "track_position": "A1", "title": "x",
+        "tracklist": [{"position": "A2", "title": "Bury Me", "duration_seconds": 200}],
+    }
+    top = Hit(ref_id=1, release_id=1, track_position="A2", hits=80, track_position_s=0.0)
+    payload = _build_fingerprint_payload(locked_payload, top, "vinyl")
+    assert payload["title"] == "Bury Me"

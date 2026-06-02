@@ -9,44 +9,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from nowplaying import history
 from nowplaying.orchestrator.guess import _guess_is_dismissed
+from nowplaying.vinyl.levels import MUSIC_DB
 
 if TYPE_CHECKING:
     from nowplaying.orchestrator.state import State
 
 log = logging.getLogger("nowplaying.main")
-
-
-def _next_side_in_progression(
-    locked_side: str, other_sides: list[str],
-) -> str:
-    """Return the next side in the record's physical progression.
-
-    Sort all available sides lexicographically (A, B, C, D, ...) and
-    return the side immediately after ``locked_side``. Returns ``""``
-    when ``locked_side`` is the last side of the record — that's the
-    end-of-album signal: there IS no next side to flip to.
-
-    Examples:
-      A | [B]        → B     (1-LP, end of A)
-      B | [A]        → ""    (1-LP, record over)
-      A | [B, C, D]  → B     (2-LP, end of A)
-      B | [A, C, D]  → C     (2-LP, end of B)
-      D | [A, B, C]  → ""    (2-LP, record over)
-
-    See docs/features/llm-track-guess-side-progression-not-flip/.
-    """
-    if not locked_side:
-        return ""
-    all_sides = sorted({locked_side, *other_sides})
-    idx = all_sides.index(locked_side)
-    if idx + 1 >= len(all_sides):
-        return ""
-    return all_sides[idx + 1]
 
 
 def _cum_duration_at(
@@ -64,6 +35,48 @@ def _cum_duration_at(
     if cum_at_locked is None:
         return None
     return (cum_at_locked, total)
+
+
+def _cum_start_s(side_tracks: list[dict], pos: str) -> float | None:
+    """Cumulative start offset (seconds from the side's start) of ``pos`` on
+    the side, summing the durations of the tracks before it. None when
+    ``pos`` isn't on the side."""
+    s = 0.0
+    for t in side_tracks:
+        p = t.get("track_position") or t.get("position")
+        if p == pos:
+            return s
+        s += float(t.get("duration_seconds") or t.get("duration_s") or 0)
+    return None
+
+
+def _position_for_side_offset(
+    side_tracks: list[dict], offset_s: float,
+) -> str | None:
+    """Return the track_position whose cumulative ``[start, end)`` window
+    contains ``offset_s`` (seconds from the side's start), or None when the
+    side has no tracks. This is the deterministic interval lookup that
+    replaces the LLM's (unreliable) position arithmetic.
+
+    A track with unknown/zero duration is treated as containing any offset at
+    or after its start (can't bound it). An offset past the summed side
+    duration clamps to the last track (the end-of-side gate handles true
+    run-out separately).
+    """
+    cum = 0.0
+    last_pos: str | None = None
+    for t in side_tracks:
+        pos = t.get("track_position") or t.get("position")
+        last_pos = pos
+        dur = float(t.get("duration_seconds") or t.get("duration_s") or 0)
+        if dur <= 0:
+            if offset_s >= cum:
+                return pos
+            return last_pos
+        if cum <= offset_s < cum + dur:
+            return pos
+        cum += dur
+    return last_pos
 
 
 def _is_duration_based_deep(
@@ -108,19 +121,12 @@ def _is_ordinal_deep(
 class TrackGuessMixin:
     """LLM-assisted track-guess proposer and side-flip detection methods."""
 
-    # Threshold constants for the side-flip-detection signal.
-    # See docs/features/llm-track-guess-side-flip-detection/.
-    _FLIP_FRESH_AUDIBLE_UP_S = 30.0
-    _FLIP_DEEP_INTO_SIDE_FRAC = 0.5
     # Threshold constants for the dead-air suppression gate.
     # See docs/features/llm-track-guess-suppress-on-dead-air/.
     _DEAD_AIR_MIN_AUDIBLE_UP_S = 60.0
     _DEAD_AIR_MIN_UNMATCHED_STREAK = 3
-    _DEAD_AIR_LEVEL_DB_AVG_MAX = -6.0  # loosened from -8 after live data
-    # 2026-05-22 showed YPAA flip windows hovering around -7 dB (groove
-    # noise + needle-lift + new-side-drop) without the average ever
-    # dipping below -8. -6 keeps the gate clear of true music levels
-    # (typically -3 or louder) while catching the side-flip transition.
+    # Dead-air level gate uses MUSIC_DB (vinyl/levels.py): audio averaging
+    # below the music floor is dead air / groove noise, not a track.
     _DEAD_AIR_DEEP_FRAC = 0.6
     _DEAD_AIR_LEVEL_WINDOW = 3
     # End-of-side geometric gate: when locked on the *last* track of the
@@ -137,52 +143,19 @@ class TrackGuessMixin:
     # the streak signal at threshold 1 (we know there's no next track).
     _END_OF_SIDE_MARGIN_S = 10.0
     _END_OF_SIDE_FALLBACK_MIN_UNMATCHED_STREAK = 1
-    # End-of-side level-aware gate: when locked at last-on-side we have
-    # a strong prior that any unmatched audio is runout groove noise
-    # (clicks, rumble, RIAA amplification of empty groove). True music
-    # rarely averages below -3 dB while runout typically lands at -3 to
-    # -7 dB. The general dead_air gate uses -6 (tuned for quiet flip
-    # windows mid-album); here we can be much more lenient. Observed
-    # Black Parade runout 2026-05-26 15:31–15:32 averaged -4.2 dB —
-    # the general -6 gate didn't fire but a -3 gate at end-of-side
-    # would have.
-    _END_OF_SIDE_LEVEL_DB_AVG_MAX = -3.0
-
-    @staticmethod
-    def _compute_elapsed_since_last_confirm_s(track_started_at: str | None) -> float:
-        """Seconds since the most recent confirmed track anchor
-        (Shazam/fingerprint/user-pin/predicted-advance). Reads
-        ``state.track_started_at`` (ISO-8601 with Z).
-
-        This clock RESETS on every predicted-advance — meaning "how long
-        ago did we last positively identify a track," NOT "how long has
-        the side been playing." For the latter, use
-        ``_compute_elapsed_since_audible_up_s``.
-
-        Returns 0.0 on missing or unparseable input.
-        See docs/features/llm-track-guess-elapsed-frame-confusion/.
-        """
-        if not track_started_at:
-            return 0.0
-        try:
-            anchor = datetime.fromisoformat(
-                track_started_at.replace("Z", "+00:00"),
-            )
-            return (datetime.now(timezone.utc) - anchor).total_seconds()
-        except (ValueError, AttributeError) as e:
-            log.warning(
-                "track-guess: unparseable track_started_at=%r (%s); using 0",
-                track_started_at, e,
-            )
-            return 0.0
+    # End-of-side level gate now also uses MUSIC_DB (vinyl/levels.py): on the
+    # clean LINE signal we no longer have the old double-phono-gain that made
+    # runout groove read at -3..-7 dB, so the separate, more-lenient end-of-side
+    # threshold was dropped — audio averaging below the music floor at
+    # last-on-side is treated as runout. Re-introduce a measured const here if
+    # LINE runout ever needs distinct handling.
 
     @staticmethod
     def _compute_elapsed_since_audible_up_s(audible_up_at_mono: float | None) -> float:
         """Seconds since the most recent silent→audible edge — i.e.
         "how long has the side been playing since the user dropped the
-        needle." Distinct from ``_compute_elapsed_since_last_confirm_s``
-        because this clock SURVIVES mid-side predicted-advance refreshes
-        of ``track_started_at``.
+        needle." Survives mid-side predicted-advance refreshes of
+        ``track_started_at``.
 
         Returns 0.0 when ``audible_up_at_mono`` is None (no needle drop
         recorded yet this session, or cleared by idle / source change).
@@ -191,13 +164,6 @@ class TrackGuessMixin:
         if audible_up_at_mono is None:
             return 0.0
         return asyncio.get_event_loop().time() - audible_up_at_mono
-
-    # Backwards-compat alias for any external callers — prefer the
-    # explicitly-named helpers above. Remove once no callers reference
-    # the old name. See same idea.md for the rename rationale.
-    @classmethod
-    def _compute_side_elapsed_s(cls, track_started_at: str | None) -> float:
-        return cls._compute_elapsed_since_last_confirm_s(track_started_at)
 
     def _guess_is_dismissed_for(
         self, state: "State", locked_rid, position: str,
@@ -213,31 +179,6 @@ class TrackGuessMixin:
             position,
             asyncio.get_running_loop().time(),
         )
-
-    @staticmethod
-    def _build_llm_guess_obj(verdict, title_for) -> dict:
-        """Project an LLM verdict + title-resolver into the kiosk Guess shape."""
-        title = title_for(verdict.position)
-        if not title:
-            log.warning(
-                "track-guess: LLM picked position=%r not in tracklist; "
-                "publishing with empty title",
-                verdict.position,
-            )
-        guess_obj: dict = {
-            "position": verdict.position,
-            "title": title,
-            "confidence": verdict.confidence,
-            "source": "llm",
-        }
-        if verdict.alt and verdict.confidence == "medium":
-            alt_pos = verdict.alt.get("position")
-            if alt_pos:
-                guess_obj["alt"] = {
-                    "position": alt_pos,
-                    "title": title_for(alt_pos),
-                }
-        return guess_obj
 
     @staticmethod
     def _last_confirm_is_deep_into_side(
@@ -266,39 +207,6 @@ class TrackGuessMixin:
         ordinal_result = _is_ordinal_deep(side_tracks, locked_pos, frac)
         return ordinal_result if ordinal_result is not None else False
 
-    @staticmethod
-    def _resolve_next_side_first(  # skylos: ignore SKY-Q301 — Why: CC 12 comes from two successive filter-and-sort steps (other sides → progression sort → target tracks); all branches are early-exit guards on the same linear algorithm
-        all_tracks: list[dict],
-        locked_side: str,
-    ) -> dict | None:
-        """Return ``{position, title, side}`` for the first track on the
-        next side in the record's physical progression, or None when the
-        locked side is the last side of the record (record over) or no
-        other side exists in the catalog.
-
-        See docs/features/llm-track-guess-side-progression-not-flip/.
-        """
-        other_tracks = [
-            t for t in all_tracks if t.get("side") != locked_side
-        ]
-        if not other_tracks:
-            return None
-        other_sides = sorted({t.get("side") for t in other_tracks if t.get("side")})
-        if not other_sides:
-            return None
-        target_side = _next_side_in_progression(locked_side, other_sides)
-        if not target_side:
-            return None
-        target_tracks = [t for t in other_tracks if t.get("side") == target_side]
-        if not target_tracks:
-            return None
-        first = target_tracks[0]
-        return {
-            "position": first.get("track_position") or first.get("position"),
-            "title": first.get("title"),
-            "side": target_side,
-        }
-
     def _should_suppress_track_guess_for_dead_air(
         self,
         state: "State",
@@ -321,7 +229,7 @@ class TrackGuessMixin:
         levels = list(state.recent_heartbeat_levels)[-self._DEAD_AIR_LEVEL_WINDOW:]
         if len(levels) < self._DEAD_AIR_LEVEL_WINDOW:
             return False
-        if sum(levels) / len(levels) >= self._DEAD_AIR_LEVEL_DB_AVG_MAX:
+        if sum(levels) / len(levels) >= MUSIC_DB:
             return False
         locked = state.last_vinyl or {}
         locked_side = locked.get("side")
@@ -413,126 +321,116 @@ class TrackGuessMixin:
         if len(levels) < self._DEAD_AIR_LEVEL_WINDOW:
             return False
         avg_level = sum(levels) / len(levels)
-        return avg_level < self._END_OF_SIDE_LEVEL_DB_AVG_MAX
+        return avg_level < MUSIC_DB
 
-    def _compute_likely_flip(
-        self,
+    @staticmethod
+    def _estimate_side_position_s(
         state: "State",
+        side_tracklist: list,
         elapsed_since_audible_up_s: float,
-    ) -> tuple[bool, dict | None]:
-        """Decide whether the user likely just flipped the record.
+    ) -> float | None:
+        """Estimate the current position on the side (seconds from the side's
+        start), anchored to the confirmed track so the LLM does a window
+        lookup instead of summing durations.
 
-        Signal is True iff:
-          - The audible-up clock is fresh (< 30s since needle dropped).
-          - The last confirmed track was deep into its side (past the 50%
-            cumulative-duration mark).
-          - The catalog has both sides AND we can resolve the opposite
-            side's first track.
-
-        Returns ``(likely_flip, next_side_first)`` where
-        ``next_side_first`` is ``{position, title, side}`` for the next
-        side's opener (per physical record progression), or None when
-        the signal is False / can't resolve / the record is over.
-
-        See docs/features/llm-track-guess-side-progression-not-flip/.
+        Pin-anchored when a user pin is live — stable across predicted-advance
+        drift (which is what reinforced the racing): ``cum_start(pin pos) +
+        initial_track_position_s + pin age``. Otherwise assume the needle
+        dropped at the side's first track and use elapsed-since-needle-drop.
+        Returns None when neither input is usable.
         """
-        if elapsed_since_audible_up_s >= self._FLIP_FRESH_AUDIBLE_UP_S:
-            return (False, None)
-        locked = state.last_vinyl or {}
-        locked_side = locked.get("side")
-        locked_pos = locked.get("track_position")
-        if not locked_side or not locked_pos:
-            return (False, None)
-        all_tracks = self._load_locked_tracks(state)
-        if not all_tracks:
-            return (False, None)
-        if not self._last_confirm_is_deep_into_side(
-            all_tracks, locked_side, locked_pos,
-            self._FLIP_DEEP_INTO_SIDE_FRAC,
-        ):
-            return (False, None)
-        next_side_first = self._resolve_next_side_first(all_tracks, locked_side)
-        if next_side_first is None:
-            return (False, None)
-        return (True, next_side_first)
+        pin = getattr(state, "user_track_pin", None)
+        if isinstance(pin, dict) and pin.get("track_position"):
+            cs = _cum_start_s(side_tracklist, pin["track_position"])
+            init = pin.get("initial_track_position_s")
+            ts = pin.get("monotonic_ts")
+            if cs is not None and init is not None and ts is not None:
+                age = asyncio.get_event_loop().time() - float(ts)
+                return cs + float(init) + age
+        if elapsed_since_audible_up_s and elapsed_since_audible_up_s > 0:
+            return float(elapsed_since_audible_up_s)
+        return None
 
-    async def _try_llm_track_guess(
+    @staticmethod
+    def _guard_no_backward_side_pos(
+        side_tracklist: list, current_pos: str | None, guessed_pos: str,
+    ) -> str:
+        """Clamp ``guessed_pos`` so a guess never moves *backward* on the side.
+
+        A record plays in one direction. When the side-position estimate
+        collapses (e.g. the needle-drop clock resets and elapsed-since-audible-up
+        craters), the window lookup can land on a track earlier than the one
+        currently shown — producing a physically impossible backward jump (the
+        live B4 'She Hates My Job' → B2 'Lead Pipe Cinch' case). In that case
+        hold the current track rather than jumping back; a real Shazam/fingerprint
+        hit re-anchors forward when it arrives.
+
+        Returns ``current_pos`` when the guess is earlier on the side, else
+        ``guessed_pos``. No-ops when either position isn't on this side
+        (e.g. a legitimate side flip) so forward motion and flips are unaffected.
+        See docs/features/advance-on-shazam-quiet-records/.
+        """
+        if not current_pos:
+            return guessed_pos
+        order = [
+            t.get("track_position") or t.get("position") for t in side_tracklist
+        ]
+        try:
+            guessed_i = order.index(guessed_pos)
+            current_i = order.index(current_pos)
+        except ValueError:
+            return guessed_pos  # one isn't on this side — don't guard
+        return current_pos if guessed_i < current_i else guessed_pos
+
+    def _try_window_track_guess(
         self,
         state: "State",
         locked_rid,
-        locked_side,
         side_tracklist: list,
         title_for,
-    ) -> tuple[bool, dict | None]:
-        """LLM-judged track-guess branch.
+        elapsed_since_audible_up_s: float,
+    ) -> dict | None:
+        """Deterministic track guess: locate the track whose cumulative
+        ``[start, end)`` window contains the confirmed-track-anchored estimated
+        side position.
 
-        Returns ``(llm_decided, guess)`` where ``llm_decided`` is True iff
-        the LLM produced a verdict (caller stops here — even when
-        ``guess`` is None because the user dismissed it). False means the
-        LLM returned the heuristic sentinel and the caller should fall
-        through to the heuristic path.
-
-        Caller is responsible for the `self.llm.enabled and side_tracklist`
-        gate.
+        Replaces the LLM position math, which proved unreliable at the one
+        mechanical step that matters here — the interval comparison (it placed
+        an estimate of 100s inside A2's [190,367] window and raced the kiosk
+        ahead of the music). The estimate itself is anchored to the confirmed
+        track (pin-stable). A monotonic guard then prevents the guess from ever
+        moving backward on the side. Returns None when there's no estimate or no
+        match, so the caller falls through to the predicted_position heuristic.
+        See docs/features/advance-on-shazam-quiet-records/.
         """
-        from nowplaying.llm import USE_HEURISTIC
-
-        # Two separately-named clocks (see
-        # docs/features/llm-track-guess-elapsed-frame-confusion/):
-        #   - elapsed_since_audible_up: "how long since the needle dropped"
-        #     (survives mid-side predicted-advance refreshes)
-        #   - elapsed_since_last_confirm: "how long since the last positive
-        #     ID" (resets on every confirmed-track anchor)
-        elapsed_since_audible_up_s = self._compute_elapsed_since_audible_up_s(
-            state.audible_up_at_mono,
+        est = self._estimate_side_position_s(
+            state, side_tracklist, elapsed_since_audible_up_s,
         )
-        elapsed_since_last_confirm_s = self._compute_elapsed_since_last_confirm_s(
-            state.track_started_at,
-        )
-        recent_history: list[dict] = []
-        try:
-            recent_history = await asyncio.to_thread(history.recent, 5)
-        except Exception as e:  # noqa: BLE001  # Why — history is optional; degrade gracefully
-            log.warning("track-guess: history.recent failed: %r", e)
-        predicted_pos = (
-            state.predicted_position.get("track_position")
-            if state.predicted_position is not None else None
-        )
-        likely_flip, next_side_first = self._compute_likely_flip(
-            state, float(elapsed_since_audible_up_s),
-        )
-        verdict = await self.llm.judge_track_guess(
-            locked_album_ctx={
-                "locked_artist": state.last_vinyl.get("artist"),
-                "locked_album": state.last_vinyl.get("album"),
-                "locked_release_id": state.last_vinyl.get("release_id"),
-                "locked_side": locked_side,
-                "locked_title": state.last_vinyl.get("title"),
-            },
-            side_tracklist=side_tracklist,
-            recent_history=recent_history,
-            audible_up_iso=state.track_started_at,
-            elapsed_since_audible_up_s=float(elapsed_since_audible_up_s),
-            elapsed_since_last_confirm_s=float(elapsed_since_last_confirm_s),
-            predicted_position=predicted_pos,
-            likely_flip=likely_flip,
-            next_side_first=next_side_first,
-        )
-        if verdict is USE_HEURISTIC:
-            return (False, None)
-        if self._guess_is_dismissed_for(state, locked_rid, verdict.position):
+        if est is None:
+            return None
+        pos = _position_for_side_offset(side_tracklist, est)
+        if not pos:
+            return None
+        current_pos = (state.last_vinyl or {}).get("track_position")
+        guarded = self._guard_no_backward_side_pos(side_tracklist, current_pos, pos)
+        if guarded != pos:
             log.info(
-                "track-guess: LLM verdict pos=%s suppressed (dismissed by user)",
-                verdict.position,
+                "track-guess: window pos=%s would move backward from %s — "
+                "holding (est=%.0fs)", pos, current_pos, est,
             )
-            return (True, None)
-        guess_obj = self._build_llm_guess_obj(verdict, title_for)
-        log.info(
-            "track-guess: LLM picked position=%s confidence=%s alt=%s — %s",
-            verdict.position, verdict.confidence,
-            guess_obj.get("alt"), verdict.reason,
-        )
-        return (True, guess_obj)
+            pos = guarded
+        if self._guess_is_dismissed_for(state, locked_rid, pos):
+            log.info(
+                "track-guess: window pos=%s suppressed (dismissed by user)", pos,
+            )
+            return None
+        log.info("track-guess: window pos=%s (est=%.0fs)", pos, est)
+        return {
+            "position": pos,
+            "title": title_for(pos),
+            "confidence": "high",
+            "source": "window",
+        }
 
     def _try_heuristic_track_guess(
         self, state: "State", locked_rid, title_for,
@@ -653,10 +551,17 @@ class TrackGuessMixin:
             )
             return None
         title_for = self._make_title_for(tracklist)
-        if self.llm.enabled and side_tracklist:
-            llm_decided, guess = await self._try_llm_track_guess(
-                state, locked_rid, locked_side, side_tracklist, title_for,
+        # Deterministic window lookup replaces the LLM position math: the LLM
+        # proved unreliable at the interval comparison (two prompt iterations
+        # both raced the kiosk ahead of the music). The estimate is anchored to
+        # the confirmed track; locating the track from it is a trivial,
+        # always-correct interval check done in code.
+        # See docs/features/advance-on-shazam-quiet-records/.
+        if side_tracklist:
+            guess = self._try_window_track_guess(
+                state, locked_rid, side_tracklist, title_for,
+                float(elapsed_since_audible_up_s),
             )
-            if llm_decided:
-                return guess  # dict (publish) or None (dismissed)
+            if guess is not None:
+                return guess
         return self._try_heuristic_track_guess(state, locked_rid, title_for)

@@ -12,6 +12,7 @@ from nowplaying.discovery.schema import (
     init_db,
     open_ro,
     open_rw,
+    set_track_duration_mbid,
 )
 
 __all__ = [
@@ -20,4 +21,5 @@ __all__ = [
     "init_db",
     "open_ro",
     "open_rw",
+    "set_track_duration_mbid",
 ]

@@ -60,6 +60,7 @@ interface AlbumContext {
 export interface SearchTrack {
   position?: string;
   title?: string;
+  clean_title?: string | null;
 }
 
 export interface SearchRelease {

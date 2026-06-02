@@ -44,17 +44,12 @@ Duration guard scenarios (10–12):
 from __future__ import annotations
 
 import asyncio
-import time
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 import pytest
 
-from nowplaying.orchestrator.streaming_idle import (
-    HEARTBEAT_INTERVAL_S,
-    NEEDS_ID_STREAK,
-    PREDICTED_ADVANCE_TOLERANCE_S,
-)
+from nowplaying.orchestrator.streaming_idle import NEEDS_ID_STREAK
 from nowplaying.orchestrator.pin import ANCHOR_TTL_BUFFER_S, PIN_TTL_BUFFER_S
 
 # Frozen monotonic "now" used by both the pin-builder and the patched loop.
@@ -230,6 +225,70 @@ def test_pin_expired_high_streak_triggers_needs_id(orch):
     orch._seed_prediction_from_last_vinyl.assert_not_called()
 
 
+# ── scaling-lock hold + decay (advance-on-shazam-quiet-records) ──────────────
+
+
+def _hold_pin(*, hold_s: float, elapsed_s: float) -> dict:
+    """A user-track-pin with the given hold (duration_seconds), aged elapsed_s."""
+    return {
+        "release_id": 31427573,
+        "track_position": "C10",
+        "monotonic_ts": _MONO_NOW - elapsed_s,
+        "duration_seconds": hold_s,
+    }
+
+
+def test_scaling_lock_hard_hold_suppresses_advance(orch):
+    """During the confident hold (before the final LOCK_DECAY_WINDOW_S) a
+    manual lock hard-suppresses predicted-advance."""
+    from nowplaying.orchestrator.pin import LOCK_DECAY_WINDOW_S
+
+    hold = 140.0
+    # Well before the decay window starts (hold - LOCK_DECAY_WINDOW_S).
+    orch.state.fingerprint_anchor = None
+    orch.state.user_track_pin = _hold_pin(
+        hold_s=hold, elapsed_s=hold - LOCK_DECAY_WINDOW_S - 20,
+    )
+    assert orch._decide_suppress_advance(orch.state, _MONO_NOW) is True
+
+
+def test_scaling_lock_decay_window_lets_advance_proceed(orch):
+    """Once inside the final LOCK_DECAY_WINDOW_S the lock stops hard-suppressing
+    so predicted-advance can fire as the track really ends."""
+    from nowplaying.orchestrator.pin import LOCK_DECAY_WINDOW_S
+
+    hold = 140.0
+    orch.state.fingerprint_anchor = None
+    orch.state.user_track_pin = _hold_pin(
+        hold_s=hold, elapsed_s=hold - LOCK_DECAY_WINDOW_S + 10,
+    )
+    assert orch._decide_suppress_advance(orch.state, _MONO_NOW) is False
+
+
+def test_scaling_lock_expired_lets_advance_proceed(orch):
+    """Past the hold the lock is expired and advance is permitted."""
+    hold = 140.0
+    orch.state.fingerprint_anchor = None
+    orch.state.user_track_pin = _hold_pin(hold_s=hold, elapsed_s=hold + 5)
+    assert orch._decide_suppress_advance(orch.state, _MONO_NOW) is False
+
+
+def test_scaling_lock_short_hold_still_hard_suppresses_early(orch):
+    """Regression for the live 'Lucky' case: a short/floored hold must keep a
+    confident hard-hold (decay window is bounded to half the hold) — it must
+    NOT be born inside its decay window and let advance fire immediately.
+
+    hold=32 → decay window = min(45, 16) = 16 → decay starts at elapsed 16.
+    """
+    orch.state.fingerprint_anchor = None
+    # Early in the hold (before the bounded decay window) → suppressed.
+    orch.state.user_track_pin = _hold_pin(hold_s=32.0, elapsed_s=5.0)
+    assert orch._decide_suppress_advance(orch.state, _MONO_NOW) is True
+    # Inside the bounded decay window → advance opens up.
+    orch.state.user_track_pin = _hold_pin(hold_s=32.0, elapsed_s=20.0)
+    assert orch._decide_suppress_advance(orch.state, _MONO_NOW) is False
+
+
 # ── fingerprint anchor guard scenarios (6–9) ─────────────────────────────────
 
 
@@ -361,7 +420,7 @@ def test_duration_guard_no_track_started_at_suppresses_long_track(orch):
 
     _run(orch._handle_unmatched_music_level("vinyl", -20.0))
 
-    seed_back_s = NEEDS_ID_STREAK * HEARTBEAT_INTERVAL_S  # 30s fallback
-    # 30s fallback << 256s threshold — guard should fire
+    # Fallback elapsed (NEEDS_ID_STREAK × heartbeat ≈ 30s) << 256s threshold
+    # → the duration guard should fire and suppress the advance.
     orch._seed_prediction_from_last_vinyl.assert_not_called()
     orch._publish_needs_id.assert_awaited_once()

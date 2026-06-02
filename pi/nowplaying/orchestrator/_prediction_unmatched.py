@@ -21,6 +21,7 @@ from nowplaying.orchestrator._first_miss import (
 from nowplaying.orchestrator.advance import _compute_advance_elapsed_s
 from nowplaying.orchestrator.pin import (
     _fingerprint_anchor_ttl_expired,
+    _pin_in_decay,
     _pin_ttl_expired,
 )
 from nowplaying.orchestrator.streaming_idle import (
@@ -114,7 +115,16 @@ class _UnmatchedMixin:
         predicted-advance and NEEDS_ID transitions.  Logs the reason.
         """
         pin = state.user_track_pin
-        if pin is not None and not _pin_ttl_expired(pin, now_mono):
+        # A manual lock is authoritative but scaling: it hard-suppresses advance
+        # only during its confident hold. Once it enters the final
+        # LOCK_DECAY_WINDOW_S (approaching the expected track end) suppression
+        # lifts so predicted-advance can fire as the track really ends — the
+        # lock's confidence decays rather than ending on a cliff.
+        if (
+            pin is not None
+            and not _pin_ttl_expired(pin, now_mono)
+            and not _pin_in_decay(pin, now_mono)
+        ):
             log.info(
                 "predicted: suppressed advance (pin active "
                 "release=%s pos=%s title=%r streak=%d)",

@@ -74,6 +74,7 @@ def init_db(db_path: Path = DISCOVERED_DB_PATH) -> None:
         con.execute("PRAGMA foreign_keys=ON")
         con.executescript(_SCHEMA_SQL)
         _migrate_normalized_album(con)
+        _migrate_clean_title(con)
         con.commit()
 
 
@@ -92,6 +93,30 @@ def _migrate_normalized_album(con: sqlite3.Connection) -> None:
         "UPDATE releases SET normalized_album = LOWER(TRIM(title)) "
         "WHERE normalized_album IS NULL AND title IS NOT NULL",
     )
+
+
+def _migrate_clean_title(con: sqlite3.Connection) -> None:
+    """Add tracks.clean_title + clean_title_source when absent. Idempotent."""
+    cols = {row[1] for row in con.execute("PRAGMA table_info(tracks)")}
+    if "clean_title" not in cols:
+        con.execute("ALTER TABLE tracks ADD COLUMN clean_title TEXT")
+    if "clean_title_source" not in cols:
+        con.execute("ALTER TABLE tracks ADD COLUMN clean_title_source TEXT")
+
+
+def set_track_duration_mbid(mbid: str, position: str, seconds: int) -> int:
+    """Guarded write for discovered.sqlite (keyed by mbid). NULL-guarded.
+    Returns rows updated (0 or 1). Used by ISRC-duration background
+    enrichment; never overwrites an existing duration."""
+    with sqlite3.connect(DISCOVERED_DB_PATH) as con:
+        con.execute("PRAGMA busy_timeout=5000")
+        cur = con.execute(
+            "UPDATE tracks SET duration_seconds = ? "
+            "WHERE mbid = ? AND position = ? AND duration_seconds IS NULL",
+            (int(seconds), mbid, position),
+        )
+        con.commit()
+        return cur.rowcount
 
 
 def open_ro(db_path: Path = DISCOVERED_DB_PATH) -> sqlite3.Connection:

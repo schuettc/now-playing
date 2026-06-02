@@ -66,16 +66,16 @@ def max_refs_for_duration(duration_s: float | None) -> int:
 # Cross-cohort guard sensitivity — minimum `Hit.hits` count for a match
 # against an EXISTING cohort to override the user-supplied target
 # position and refuse the write. Lower → stricter (more refusals);
-# higher → laxer.
+# higher → laxer. The static cap + spacing gates are the authoritative
+# bound on DB growth; the calibration log line in
+# `_cross_cohort_guard_passes` surfaces near-threshold hits for future tuning.
 #
-# Empirically validated (2026-05-18): with 30-ref cohorts the true-positive
-# signal grows (correct-cohort clips score in the 100s of hits against dense
-# refs), while a false-positive cross-cohort collision still needs 5 aligned
-# hashes by accident — statistically very unlikely for distinct audio. Value
-# intentionally stays conservative; the static cap + spacing gates are the
-# authoritative bound on DB growth. Calibration log lines (see
-# `_cross_cohort_guard_passes`) surface near-threshold hits for future tuning.
-GUARD_THRESHOLD = 5
+# 5 is the engine floor — *every* ref that returns from the scoped scan at
+# all scores >=5 — so a threshold of 5 fires the guard on coincidental hash
+# collisions between unrelated same-album tracks. Observed false positives ran
+# 15–51 hits, true positives 80–136, so 30 (aligned with
+# MIN_FINGERPRINT_HITS_BLIND) sits cleanly between noise and signal.
+GUARD_THRESHOLD = 30
 
 
 async def maybe_promote(
@@ -180,6 +180,20 @@ async def _cross_cohort_guard_passes(
             return True
         top = hits[0]
         if top.track_position == target_position:
+            return True
+        # 2x margin gate — mirrors the recognition cascade's top-2 rule
+        # (_heartbeat_handlers.py). When >=2 candidate cohorts return and the
+        # top does NOT dominate the runner-up by 2x, the evidence is ambiguous
+        # noise rather than a clear misattribution, so allow the promotion.
+        # See docs/features/advance-on-shazam-quiet-records/.
+        if len(hits) >= 2 and top.hits < 2 * hits[1].hits:
+            log.info(
+                "promotion: release=%s pos=%s guard allows "
+                "(ambiguous cohorts top=%s@%d runner_up=%s@%d)",
+                release_id, target_position,
+                top.track_position, top.hits,
+                hits[1].track_position, hits[1].hits,
+            )
             return True
         # `top.hits` is always >= GUARD_THRESHOLD here (match() filters by
         # min_hits). The refused log below already records the hits count,

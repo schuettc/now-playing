@@ -48,7 +48,6 @@ from nowplaying.control.next import (
 from nowplaying.control.pin_track import (
     _bad_pin_request,
     _find_pin_track,
-    _pin_ttl_seconds,
     _resolve_pin_tracklist,
     pin_track,
 )
@@ -115,7 +114,6 @@ __all__ = [
     "_maybe_llm_rerank_items",
     "_maybe_schedule_art_fetch",
     "_now_iso",
-    "_pin_ttl_seconds",
     "_rank_and_truncate",
     "_reorder_by_verdict",
     "_resolve_next_tracklist",

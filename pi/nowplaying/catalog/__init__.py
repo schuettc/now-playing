@@ -80,7 +80,7 @@ def _get_discovered_release(mbid: str) -> Optional[dict]:
             if not rel_row:
                 return None
             track_rows = con.execute(
-                "SELECT position, side, title, duration_seconds "
+                "SELECT position, side, title, duration_seconds, clean_title "
                 "FROM tracks WHERE mbid = ? ORDER BY rowid",
                 (mbid,),
             ).fetchall()

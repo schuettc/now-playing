@@ -162,6 +162,29 @@ describe('deriveIdentifyState', () => {
     ).toBe('awaiting-confirm');
   });
 
+  it('does NOT prompt confirm when the backend marks the guess not confirmable', () => {
+    // Backend contract (epic consolidate-guess-confidence-lifetime): a guess
+    // attached to a confirmed now-playing has confirmable:false → no card.
+    expect(
+      deriveIdentifyState(
+        pl({
+          guess: {
+            position: 'A1',
+            title: 'Pitiful',
+            confidence: 'high',
+            source: 'window',
+            confirmable: false,
+          },
+        }),
+        null,
+        null,
+        null,
+        MOTION.identifyingTimeoutMs + 1,
+        0,
+      ),
+    ).toBe('needs-id');
+  });
+
   it('returns needs-id when no match and no guess (no identifying timer)', () => {
     expect(deriveIdentifyState(pl({ match_method: 'unmatched' }), null, null, null, 0, null))
       .toBe('needs-id');

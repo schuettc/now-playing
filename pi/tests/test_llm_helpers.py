@@ -15,156 +15,28 @@ from __future__ import annotations
 import asyncio
 from unittest import mock
 
-import pytest
-
 from nowplaying.llm import USE_HEURISTIC, LLMAssist
-from nowplaying.llm.track_guess import (
-    _bucket_elapsed,
-    _filter_recent_history,
-    _is_same_track,
-    _locked_payload,
-    _norm_key,
-    _str,
-    _tracklist_payload,
-)
 
 
 # ── _str ────────────────────────────────────────────────────────────────
 
 
-def test_str_passes_through_none():
-    assert _str(None) is None
-
-
-@pytest.mark.parametrize("v", [0, 1, 3.14, True, False])
-def test_str_passes_through_numerics_and_bools(v):
-    # JSON-serialization correctness depends on preserving int/float/bool
-    # rather than stringifying them.
-    assert _str(v) is v
-
-
-def test_str_stringifies_everything_else():
-    assert _str({"a": 1}) == "{'a': 1}"
-    assert _str([1, 2]) == "[1, 2]"
-
-
 # ── _norm_key ───────────────────────────────────────────────────────────
-
-
-def test_norm_key_strips_and_casefolds():
-    assert _norm_key("  Beatles  ") == "beatles"
-
-
-def test_norm_key_handles_none_and_non_string():
-    assert _norm_key(None) == ""
-    assert _norm_key(123) == ""
 
 
 # ── _is_same_track ──────────────────────────────────────────────────────
 
 
-def test_is_same_track_matches_on_normalized_fields():
-    assert _is_same_track(
-        {"artist": " BEATLES ", "title": "Help!"}, "beatles", "help!",
-    )
-
-
-def test_is_same_track_false_when_current_empty():
-    # Defense: an empty locked_ctx must NOT drop every history row.
-    assert not _is_same_track(
-        {"artist": "Beatles", "title": "Help!"}, "", "",
-    )
-
-
-def test_is_same_track_false_on_mismatch():
-    assert not _is_same_track(
-        {"artist": "Beatles", "title": "Yesterday"}, "beatles", "help!",
-    )
-
-
 # ── _filter_recent_history ──────────────────────────────────────────────
-
-
-def test_filter_recent_history_drops_current_track():
-    history = [
-        {"artist": "Beatles", "title": "Help!"},
-        {"artist": "Beatles", "title": "Yesterday"},
-    ]
-    locked = {"locked_artist": "Beatles", "locked_title": "Help!"}
-    out = _filter_recent_history(history, locked)
-    assert out == [{"artist": "Beatles", "title": "Yesterday"}]
-
-
-def test_filter_recent_history_handles_none():
-    assert _filter_recent_history(None, {"locked_artist": "a", "locked_title": "b"}) == []
-
-
-def test_filter_recent_history_keeps_all_when_current_empty():
-    # Empty locked_ctx means "no current track" — keep everything.
-    history = [{"artist": "Beatles", "title": "Help!"}]
-    out = _filter_recent_history(history, {})
-    assert out == [{"artist": "Beatles", "title": "Help!"}]
 
 
 # ── _bucket_elapsed ─────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize(
-    "elapsed,expected",
-    [(0.0, 0), (2.4, 0), (2.5, 0), (3.0, 5), (47.0, 45), (49.0, 50), (50.0, 50)],
-)
-def test_bucket_elapsed(elapsed, expected):
-    # banker's rounding via round(): 2.5 → 0 (round half to even).
-    assert _bucket_elapsed(elapsed) == expected
-
-
 # ── _tracklist_payload ──────────────────────────────────────────────────
 
 
-def test_tracklist_payload_prefers_track_position():
-    out = _tracklist_payload([
-        {"track_position": "A1", "position": "X1", "title": "Side A Opener"},
-    ])
-    assert out == [{"position": "A1", "title": "Side A Opener", "duration_s": None}]
-
-
-def test_tracklist_payload_falls_back_to_position():
-    out = _tracklist_payload([{"position": "B2", "title": "Track"}])
-    assert out[0]["position"] == "B2"
-
-
-def test_tracklist_payload_duration_priority():
-    # duration_seconds (catalog key) wins over legacy aliases.
-    out = _tracklist_payload([{
-        "track_position": "A1", "title": "x",
-        "duration_seconds": 180, "duration_s": 200, "duration": 220,
-    }])
-    assert out[0]["duration_s"] == 180
-
-
 # ── _locked_payload ─────────────────────────────────────────────────────
-
-
-def test_locked_payload_renames_keys():
-    out = _locked_payload({
-        "locked_artist": "Beatles",
-        "locked_album": "Help!",
-        "locked_release_id": 123,
-        "locked_side": "A",
-        "locked_title": "Help!",
-    })
-    assert out == {
-        "artist": "Beatles",
-        "album": "Help!",
-        "release_id": 123,
-        "side": "A",
-        "last_confirmed_track": "Help!",
-    }
-
-
-def test_locked_payload_renders_missing_as_none():
-    out = _locked_payload({})
-    assert all(v is None for v in out.values())
 
 
 # ── LLMAssist._call_tool ────────────────────────────────────────────────

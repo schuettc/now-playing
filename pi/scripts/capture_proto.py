@@ -81,16 +81,14 @@ def main() -> None:  # skylos: ignore — prototype script (argparse + signal-wi
     p = argparse.ArgumentParser()
     p.add_argument("--device", type=int, default=None)
     p.add_argument("--rate", type=int, default=44100)
-    p.add_argument("--silence-db", type=float, default=-15.0,
-                   help="RMS below this is treated as silence; heartbeats are "
-                        "suppressed. On the canonical Pi hardware (UFO202 + "
-                        "pre-amp), the ambient line-in noise floor with no "
-                        "record playing sits around -17 dB. Real music is "
-                        "-0.5 to -10 dB. -15 cleanly separates them with "
-                        "~2 dB of clearance above ambient and 5+ dB below "
-                        "the quietest expected music signal. "
-                        "--resume-music-db defaults to -28.0, keeping a "
-                        "healthy 13 dB gap above this floor.")
+    p.add_argument("--silence-db", type=float, default=-34.0,
+                   help="hysteresis LOWER bound (dBFS RMS): the gate flips to "
+                        "silent only when level falls below this, and heartbeats "
+                        "are suppressed. Pairs with --resume-music-db (upper "
+                        "bound); the gap between them is a no-man's-land that "
+                        "prevents threshold flap. Default matches "
+                        "nowplaying/vinyl/levels.py SILENCE_DB; the orchestrator "
+                        "passes the canonical value from there at launch.")
     p.add_argument("--heartbeat-s", type=float, default=15.0,
                    help="seconds between heartbeat clip emissions when signal is present")
     p.add_argument("--silent-s", type=float, default=5.0,
@@ -109,11 +107,14 @@ def main() -> None:  # skylos: ignore — prototype script (argparse + signal-wi
                         "under the cliff.")
     p.add_argument("--start-paused", action="store_true",
                    help="start with heartbeat emission paused (orchestrator can SIGCONT to resume)")
-    p.add_argument("--resume-music-db", type=float, default=-28.0,
-                   help="after a silent period, force-emit the first heartbeat as soon as "
-                        "level rises above this threshold (overrides the 15s cadence). Lands "
-                        "the first post-silence clip at song-start rather than wherever the "
-                        "cadence tick happens to fall.")
+    p.add_argument("--resume-music-db", type=float, default=-30.0,
+                   help="hysteresis UPPER bound (dBFS RMS): the gate flips to "
+                        "audible only when level rises above this — and, after a "
+                        "silent period, force-emits the first heartbeat here so "
+                        "the first post-silence clip lands at song-start. Pairs "
+                        "with --silence-db (lower bound). Default matches "
+                        "nowplaying/vinyl/levels.py MUSIC_DB; the orchestrator "
+                        "passes the canonical value from there at launch.")
     p.add_argument("--instant-delay-s", type=float, default=INSTANT_RECOGNIZE_DELAY_S,
                    help="seconds after a silent->audible transition at which to flush the "
                         "rolling buffer as an _instant.wav clip. The 12s buffer at that point "
@@ -325,9 +326,9 @@ def main() -> None:  # skylos: ignore — prototype script (argparse + signal-wi
                     emit({"ts": now_iso(), "event": "silent",
                           "level_db": round(level_db, 1)})
                     silent_emitted = True
-            else:
-                # Audio is back above the silence floor. Any silent→audible
-                # level transition — even a sub-second dip from a fast
+            elif level_db >= args.resume_music_db:
+                # Audio rose above the MUSIC (upper hysteresis) bound. Any
+                # silent→audible level transition — even a sub-second dip from a fast
                 # side-flip — fires the `audible` IPC event so main.py
                 # can clear the previous side's album-lock and (when
                 # idle) flip the kiosk to VinylIdentifying. The
@@ -373,6 +374,11 @@ def main() -> None:  # skylos: ignore — prototype script (argparse + signal-wi
                 was_below_floor = False
                 silent_since = None
                 silent_emitted = False
+            else:
+                # Hysteresis no-man's-land: SILENCE_DB <= level < MUSIC_DB.
+                # Hold the current silent/audible state — flip neither way —
+                # so a level hovering between the bounds can't flap.
+                pass
 
             if emit_paused[0]:
                 continue
@@ -413,7 +419,10 @@ def main() -> None:  # skylos: ignore — prototype script (argparse + signal-wi
             else:
                 if now - last_heartbeat_at < effective_heartbeat_s:
                     continue
-                if level_db < args.silence_db:
+                # Suppress heartbeats while in the below-floor (silent)
+                # hysteresis state — which now persists through the
+                # no-man's-land until level crosses the MUSIC_DB upper bound.
+                if was_below_floor:
                     continue
                 if len(rolling) < buffer_blocks:
                     continue

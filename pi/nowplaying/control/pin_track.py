@@ -13,7 +13,6 @@ from nowplaying.vinyl import promotion
 from nowplaying.control._shared import (
     _apply_user_track_pin,
     _audible_edge_unix_ts,
-    _first_miss_initial_position_s,
     _is_fresh_side_first_track_for_pin,
     _maybe_schedule_art_fetch,
     _now_iso,
@@ -164,20 +163,6 @@ def _resolve_pin_tracklist(state, rid: int, pos: str) -> list[dict] | None:
     return _tracklist_from_release(rel)
 
 
-def _pin_ttl_seconds(
-    duration_seconds: int | None,
-    track_started_at_iso: str | None,
-) -> int | None:
-    """Compute the pin TTL for the API response (remaining time at click).
-
-    Delegates to ``compute_pin_duration`` so the response value matches
-    exactly what the orchestrator will enforce via ``_pin_ttl_expired``.
-    Returns ``None`` when ``duration_seconds`` is unknown.
-    """
-    from nowplaying.orchestrator.pin import compute_pin_duration
-    return compute_pin_duration(duration_seconds, track_started_at_iso)
-
-
 def _parse_pin_request_body(body: dict) -> tuple[int, str]:
     """Extract (release_id, track_position) from a pin-track request body.
     Raises ValueError/KeyError/TypeError on missing or malformed fields;
@@ -191,7 +176,7 @@ class _PinStateResult:
     canonical_pos: str
     title: str | None
     duration: int | None
-    pin_track_started_at: str | None
+    pin_ttl_seconds: int | None
     prior_pos: str | None
     prior_pin_unix_ts: int | None
     prior_pin_duration_seconds: float | int | None
@@ -200,72 +185,52 @@ class _PinStateResult:
 def _apply_pin_state(
     state, locked: dict, rid: int, matched: dict, pos: str,
 ) -> _PinStateResult:
-    """Compute timestamps, update orchestrator state, apply user-track-pin.
+    """Overlay the pinned track, update orchestrator state, apply the pin.
 
-    Captures all pre-mutation priors, calls :func:`_apply_pin_to_locked` and
-    :func:`_apply_user_track_pin`, resolves ``track_started_at`` (with
-    predicted-advance backdate when applicable), clears ``predicted_position``,
-    and refreshes the confidence stamp for fresh-start pins.
+    Captures pre-mutation priors for the backfill scheduler, overlays the
+    pinned track onto the locked payload, clears ``predicted_position``, and
+    refreshes the confidence stamp for fresh-start pins. The pin's hold and
+    ``state.track_started_at`` are both derived from reliable position cues
+    inside :func:`_apply_user_track_pin` — this function passes no backdate,
+    so drift-prone dead-reckoning can never shorten the lock.
 
     Returns a :class:`_PinStateResult` with all values the caller needs to
     schedule backfill, log, and build the response.
     """
     now_iso = _now_iso()
     prior_pos = (locked or {}).get("track_position")
-    is_different_track = prior_pos != pos
-    prior_track_started_at = (
-        None if is_different_track else state.track_started_at
-    )
     canonical_pos, title, duration = _apply_pin_to_locked(
         locked, matched, pos, now_iso,
     )
-    first_miss_offset = (
-        _first_miss_initial_position_s(state) if is_different_track else None
-    )
-    if first_miss_offset is not None:
-        state.track_started_at = time.strftime(
-            "%Y-%m-%dT%H:%M:%SZ",
-            time.gmtime(time.time() - first_miss_offset),
-        )
-        # Backdated value is also the right input to pin TTL math: pin
-        # represents a track that has already been playing for ~first_miss
-        # seconds, so TTL must subtract that elapsed time or the pin
-        # outlives the real track end.
-        # See docs/features/pin-ttl-ignores-initial-track-position/.
-        pin_track_started_at = state.track_started_at
-    else:
-        state.track_started_at = now_iso
-        pin_track_started_at = prior_track_started_at
+    is_different_track = prior_pos != canonical_pos
     state.predicted_position = None
     if is_different_track:
         # Fresh-start: this track just began per the user. Refresh the
         # confidence stamp so state-decay does not fire on the prior
         # track's stale age the moment the pin TTL expires.
         state.last_vinyl_confidence_set_at = asyncio.get_running_loop().time()
-    # Capture `state.last_pin_unix_ts` BEFORE `_apply_user_track_pin`
-    # clobbers it with the current pin's wall-clock. The backfill
-    # scheduler needs the PRIOR pin's timestamp (or None for the first
-    # pin in a session) to compute the correct window lower bound.
-    # See docs/features/pin-backfill-boundary-clobbered-by-self/.
+    # Capture `state.last_pin_unix_ts` and the prior pin's duration BEFORE
+    # `_apply_user_track_pin` clobbers them. The backfill scheduler needs the
+    # PRIOR pin's timestamp (or None for the first pin) to compute the window
+    # lower bound, and the prior duration to advance it past the prior track's
+    # expected end (clips before that end contain prior-track audio).
+    # See docs/features/pin-backfill-boundary-clobbered-by-self/ and
+    # docs/features/backfill-window-assumes-boundary-is-track-start/.
     prior_pin_unix_ts = getattr(state, "last_pin_unix_ts", None)
-    # Capture the prior pin's duration BEFORE `_apply_user_track_pin`
-    # clobbers `state.user_track_pin` with the new pin's payload. Backfill
-    # uses this to advance the window lower bound past the prior track's
-    # expected end — clips before that end contain prior-track audio.
-    # See docs/features/backfill-window-assumes-boundary-is-track-start/.
     prior_pin = getattr(state, "user_track_pin", None)
     prior_pin_duration_seconds = (
         prior_pin.get("duration_seconds") if isinstance(prior_pin, dict) else None
     )
-    _apply_user_track_pin(
-        state, rid, canonical_pos, matched,
-        track_started_at_iso=pin_track_started_at,
+    _apply_user_track_pin(state, rid, canonical_pos, matched)
+    new_pin = getattr(state, "user_track_pin", None)
+    pin_ttl_seconds = (
+        new_pin.get("duration_seconds") if isinstance(new_pin, dict) else None
     )
     return _PinStateResult(
         canonical_pos=canonical_pos,
         title=title,
         duration=duration,
-        pin_track_started_at=pin_track_started_at,
+        pin_ttl_seconds=pin_ttl_seconds,
         prior_pos=prior_pos,
         prior_pin_unix_ts=prior_pin_unix_ts,
         prior_pin_duration_seconds=prior_pin_duration_seconds,
@@ -394,8 +359,5 @@ async def pin_track(request: web.Request) -> web.Response:
         "track_position": ps.canonical_pos,
         "title": ps.title,
         "duration_seconds": ps.duration,
-        "pin_ttl_seconds": _pin_ttl_seconds(
-            ps.duration,
-            ps.pin_track_started_at,
-        ),
+        "pin_ttl_seconds": ps.pin_ttl_seconds,
     })

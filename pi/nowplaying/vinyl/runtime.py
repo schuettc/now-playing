@@ -190,12 +190,17 @@ async def run_capture(
     stop: asyncio.Event,
     *,
     silence_db: float | None = None,
+    music_db: float | None = None,
     start_paused: bool = False,
 ) -> None:
     """Run capture_proto.py and dispatch events.
 
     on_clip(clip_path, level_db) — called on each heartbeat with a 10s recorded clip and its measured level
     on_state(state)    — called with "silent" when sustained silence is detected
+
+    ``silence_db`` / ``music_db`` are the hysteresis lower/upper bounds
+    (dBFS RMS) forwarded to the capture daemon. None → capture_proto's own
+    defaults.
     """
     if not CAPTURE_SCRIPT.exists():
         raise FileNotFoundError(f"capture script missing: {CAPTURE_SCRIPT}")
@@ -204,6 +209,8 @@ async def run_capture(
     cmd: list[str] = [py, str(CAPTURE_SCRIPT)]
     if silence_db is not None:
         cmd += ["--silence-db", str(silence_db)]
+    if music_db is not None:
+        cmd += ["--resume-music-db", str(music_db)]
     if start_paused:
         cmd += ["--start-paused"]
 
@@ -274,6 +281,7 @@ async def run_capture_supervised(
     *,
     get_start_paused: Callable[[], bool],
     silence_db: float | None = None,
+    music_db: float | None = None,
     start_paused: bool = False,
 ) -> None:
     """Run ``run_capture`` in a supervision loop that restarts the capture
@@ -289,6 +297,7 @@ async def run_capture_supervised(
             so the replacement child starts with the right emit mode without
             needing a post-spawn signal.
         silence_db: Forwarded to each ``run_capture`` invocation.
+        music_db: Forwarded to each ``run_capture`` invocation.
         start_paused: Used only for the **first** spawn; subsequent restarts
             use ``get_start_paused()`` instead.
     """
@@ -306,6 +315,7 @@ async def run_capture_supervised(
                 await run_capture(
                     on_clip, on_state, stop,
                     silence_db=silence_db,
+                    music_db=music_db,
                     start_paused=spawn_paused,
                 )
             except Exception as exc:

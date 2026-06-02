@@ -291,10 +291,10 @@ def _fill_null_durations_by_title(
     Returns the count of rows updated.
     """
     updated = 0
-    for d_pos, d_title, d_dur in discogs_tracks:
+    for d_pos, d_title, d_dur, d_clean in discogs_tracks:
         if d_dur is not None:
             continue  # never overwrite an existing Discogs duration
-        mb_dur = mb_by_title.get(_norm_title(d_title or ""))
+        mb_dur = mb_by_title.get(_norm_title(d_clean or d_title or ""))
         if mb_dur is None or mb_dur is _AMBIGUOUS_TITLE:
             continue
         cur = con.execute(
@@ -326,7 +326,7 @@ async def _apply_recording_level_fallback(
     from nowplaying import coverart  # noqa: E402
 
     remaining = con.execute(
-        "SELECT position, title FROM tracks "
+        "SELECT position, title, clean_title FROM tracks "
         "WHERE release_id = ? AND duration_seconds IS NULL "
         "ORDER BY rowid",
         (release_id,),
@@ -338,8 +338,8 @@ async def _apply_recording_level_fallback(
         recording_cache if recording_cache is not None else {}
     )
     updated = 0
-    for d_pos, d_title in remaining:
-        rec_mbid = mb_by_title_rec.get(_norm_title(d_title or ""))
+    for d_pos, d_title, d_clean in remaining:
+        rec_mbid = mb_by_title_rec.get(_norm_title(d_clean or d_title or ""))
         if not rec_mbid or rec_mbid is _AMBIGUOUS_TITLE:
             continue
         # Narrow type for the static checker.
@@ -405,7 +405,7 @@ async def _enrich_durations_from_musicbrainz_async(
         return 0
 
     discogs_tracks = con.execute(
-        "SELECT position, title, duration_seconds FROM tracks "
+        "SELECT position, title, duration_seconds, clean_title FROM tracks "
         "WHERE release_id = ? ORDER BY rowid",
         (release_id,),
     ).fetchall()
@@ -425,6 +425,27 @@ async def _enrich_durations_from_musicbrainz_async(
         mb_by_title_rec=mb_by_title_rec,
         recording_cache=recording_cache,
     )
+    return updated
+
+
+def clean_release_titles(con: sqlite3.Connection, release_id: int) -> int:
+    """Populate tracks.clean_title / clean_title_source for one release.
+    Only fills rows where clean_title IS NULL. Returns rows updated."""
+    from nowplaying.titleclean import clean_title
+
+    rows = con.execute(
+        "SELECT position, title FROM tracks WHERE release_id = ? AND clean_title IS NULL",
+        (release_id,),
+    ).fetchall()
+    updated = 0
+    for position, title in rows:
+        clean, source = clean_title(title or "")
+        cur = con.execute(
+            "UPDATE tracks SET clean_title = ?, clean_title_source = ? WHERE release_id = ? AND position = ?",
+            (clean, source, release_id, position),
+        )
+        updated += cur.rowcount
+    con.commit()
     return updated
 
 

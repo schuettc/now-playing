@@ -3,9 +3,61 @@ predicted-payload assembler.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import recognize_proto
 
 from nowplaying.discogs import catalog as discogs_catalog
+from nowplaying.orchestrator.pin import _confidence_for_remaining
+
+# Match methods that represent a *confirmed* now-playing track (not a guess).
+# When the payload's match_method is one of these, an attached guess is a
+# passive tracklist hint, not something to prompt the user to confirm.
+_CONFIRMED_MATCH_METHODS = frozenset({
+    "shazam", "fingerprint", "user-identified", "user-selected",
+    "sonos-didl", "sonos-polled",
+})
+
+
+def _elapsed_in_track_s(track_started_at_iso: str | None) -> float:
+    """Seconds since the (estimated) start of the current track, from its
+    ISO-8601 ``track_started_at``. Returns 0.0 on missing/unparseable input."""
+    if not track_started_at_iso:
+        return 0.0
+    try:
+        anchor = datetime.fromisoformat(track_started_at_iso.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return 0.0
+    return max(0.0, (datetime.now(timezone.utc) - anchor).total_seconds())
+
+
+def enrich_guess_contract(payload: dict) -> None:
+    """Stamp the guess contract — ``confidence`` / ``expires_in_s`` /
+    ``confirmable`` — onto ``payload['guess']`` so the kiosk renders the guess
+    without re-deriving backend state. No-op when there is no guess.
+    Epic consolidate-guess-confidence-lifetime / C2.
+
+      - ``expires_in_s``: seconds of the guessed track left (duration − elapsed),
+        the single lifetime clock; ``None`` when the duration is unknown.
+      - ``confidence``: track-remaining ramp (high → medium → low) via the shared
+        primitive; left at the guess's source value when there is no duration.
+      - ``confirmable``: True unless the now-playing track is confirmed by
+        Shazam/fingerprint/user — i.e. the guess IS the now-playing guess and
+        the kiosk should offer to confirm it.
+    """
+    guess = payload.get("guess")
+    if not isinstance(guess, dict):
+        return
+    duration = payload.get("duration_seconds")
+    if duration is None:
+        guess["expires_in_s"] = None
+    else:
+        remaining = max(
+            0.0, float(duration) - _elapsed_in_track_s(payload.get("track_started_at")),
+        )
+        guess["expires_in_s"] = round(remaining)
+        guess["confidence"] = _confidence_for_remaining(remaining, float(duration))
+    guess["confirmable"] = payload.get("match_method") not in _CONFIRMED_MATCH_METHODS
 
 
 def _advance_predicted_position(

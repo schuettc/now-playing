@@ -23,7 +23,7 @@ from urllib.parse import urlencode
 import aiohttp
 
 from nowplaying import art_overrides, coverart
-from nowplaying.discogs import catalog, images as dimages
+from nowplaying.discogs import images as dimages
 from nowplaying.net_allowlist import is_allowed_upstream
 
 log = logging.getLogger("nowplaying.art_picker")

@@ -61,6 +61,7 @@ def _make_db_with_release(
             side TEXT,
             title TEXT,
             duration_seconds INTEGER,
+            clean_title TEXT,
             PRIMARY KEY (release_id, position)
         )
     """)

@@ -84,7 +84,11 @@ def safe_read_bytes(path: Path | str, *, max_bytes: int = _DEFAULT_MAX_BYTES) ->
     p = Path(path)
     if hasattr(os, "O_NOFOLLOW"):
         try:
-            fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW)  # skylos: ignore SKY-D325 — Why: this IS the safe-read helper; O_NOFOLLOW is the mitigation, not a new taint source
+            # O_NONBLOCK so opening a FIFO/device returns immediately instead of
+            # blocking forever waiting for a writer — the S_ISREG check below
+            # then rejects it. Without it a FIFO path hangs the caller (and the
+            # test suite). No-op for regular files. skylos: ignore SKY-D325 — Why: this IS the safe-read helper; O_NOFOLLOW is the mitigation, not a new taint source
+            fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         except OSError as e:
             if e.errno in (errno.ELOOP, errno.EMLINK):
                 raise OSError(

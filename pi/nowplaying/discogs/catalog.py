@@ -15,6 +15,21 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 DB_PATH = REPO_ROOT / "pi" / "data" / "discogs.sqlite"
 
 
+def set_track_duration(release_id: int, position: str, seconds: int) -> int:
+    """Guarded write: set a track's duration only when currently NULL.
+    Returns rows updated (0 or 1). Used by ISRC-duration background
+    enrichment; never overwrites an existing duration."""
+    with sqlite3.connect(DB_PATH) as con:
+        con.execute("PRAGMA busy_timeout=5000")
+        cur = con.execute(
+            "UPDATE tracks SET duration_seconds = ? "
+            "WHERE release_id = ? AND position = ? AND duration_seconds IS NULL",
+            (int(seconds), release_id, position),
+        )
+        con.commit()
+        return cur.rowcount
+
+
 def _normalize(s: str) -> str:
     s = (s or "").lower()
     s = re.sub(r"\(.*?\)|\[.*?\]", "", s)  # strip parentheticals
@@ -193,7 +208,7 @@ def get_release(release_id: int) -> Optional[dict]:
             out["tracks"] = [
                 dict(t)
                 for t in con.execute(
-                    "SELECT position, side, title, duration_seconds "
+                    "SELECT position, side, title, duration_seconds, clean_title "
                     "FROM tracks WHERE release_id = ? AND is_suite_parent = 0 "
                     "ORDER BY position",
                     (release_id,),
@@ -575,7 +590,7 @@ def _find_by_artist_title_primary(
             rows = con.execute(
                 """
                 SELECT releases.id AS release_id, releases.artist, releases.title AS album, releases.year, releases.format,
-                       tracks.position, tracks.title AS track_title
+                       tracks.position, tracks.title AS track_title, tracks.clean_title AS track_clean_title
                 FROM tracks JOIN releases ON tracks.release_id = releases.id
                 WHERE LOWER(releases.artist) LIKE ?
                 """,
@@ -612,6 +627,7 @@ def _find_by_artist_title_primary(
     full["match_score"] = best[0]
     full["matched_track_position"] = best[3]["position"]
     full["matched_track_title"] = best[3]["track_title"]
+    full["matched_track_clean_title"] = best[3]["track_clean_title"]
     alternates = _collect_alternates(scored, best[1], best[3]["release_id"])
     if alternates:
         full["alternate_releases"] = alternates

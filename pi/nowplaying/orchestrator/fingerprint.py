@@ -102,6 +102,7 @@ def _build_blind_fingerprint_payload(  # skylos: ignore SKY-Q301 SKY-C304 — Wh
             "position": pos,
             "side": side,
             "title": title,
+            "clean_title": tr.get("clean_title"),
             "duration_seconds": tr.get("duration_seconds"),
         })
         if pos == top.track_position:

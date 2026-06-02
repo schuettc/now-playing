@@ -25,7 +25,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
 from soco import SoCo, config as soco_config, discover, events_asyncio

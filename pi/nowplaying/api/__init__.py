@@ -155,7 +155,8 @@ async def serve(
 
 
 def parse_args() -> tuple[str, int]:
-    import argparse, os
+    import argparse
+    import os
 
     p = argparse.ArgumentParser()
     p.add_argument("--host", default=os.environ.get("NP_HOST", "0.0.0.0"))

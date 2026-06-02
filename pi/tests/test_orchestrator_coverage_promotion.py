@@ -26,7 +26,7 @@ from unittest import mock
 
 import pytest
 
-from nowplaying.orchestrator.streaming_idle import SHAZAM_ONLY_MIN_LEVEL_DB
+from nowplaying.orchestrator.streaming_idle import MUSIC_DB
 from nowplaying.orchestrator.pin import ANCHOR_TTL_BUFFER_S, PIN_TTL_BUFFER_S
 from nowplaying.vinyl import promotion
 
@@ -34,9 +34,9 @@ from nowplaying.vinyl import promotion
 _MONO_NOW = 2_000_000.0
 
 # Level that is clearly above the silence floor.
-_MUSIC_LEVEL = SHAZAM_ONLY_MIN_LEVEL_DB + 10.0
+_MUSIC_LEVEL = MUSIC_DB + 10.0
 # Level that is clearly below the silence floor.
-_SILENCE_LEVEL = SHAZAM_ONLY_MIN_LEVEL_DB - 10.0
+_SILENCE_LEVEL = MUSIC_DB - 10.0
 
 _FAKE_WAV = b"RIFF\x00\x00\x00\x00WAVEfmt "  # minimal stub — never decoded
 
@@ -128,7 +128,7 @@ async def test_no_pin_skips_promotion(orch, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_silence_floor_skips_promotion(orch, monkeypatch):
-    """level_db below SHAZAM_ONLY_MIN_LEVEL_DB → no promotion (silence gate)."""
+    """level_db below MUSIC_DB → no promotion (silence gate)."""
     monkeypatch.setattr(
         promotion, "should_promote_for_coverage", lambda *a, **kw: True,
     )

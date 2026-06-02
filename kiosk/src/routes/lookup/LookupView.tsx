@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useSearch } from 'wouter';
 import { useStore } from '@/store/useStore';
 import { useRecentPlays } from '@/hooks/useRecentPlays';
+import { dedupeRecentsByAlbum } from '@/routes/lookup/dedupeRecents';
 import { useReleaseTracklist } from '@/hooks/useReleaseTracklist';
 import { pickLookupVariant, type LookupVariant } from '@/lib/lookupVariant';
 import { parseFromNeedsId } from '@/features/identify/identifyScopeHelpers';
@@ -101,7 +102,13 @@ export function LookupView() {
   const search = useSearch();
   const [, navigate] = useLocation();
   const payload = useStore((s) => s.payload);
-  const { recents } = useRecentPlays(20);
+  // Over-fetch, then collapse to distinct albums — the suggestion row thinks
+  // in records, not tracks/pressings. See docs/features/identify-recents-by-album/.
+  const { recents: rawRecents } = useRecentPlays(20);
+  const recents = useMemo(
+    () => (rawRecents === null ? null : dedupeRecentsByAlbum(rawRecents)),
+    [rawRecents],
+  );
 
   const urlReleaseId = parseReleaseId(search);
   const variantOverride = parseVariantOverride(search);

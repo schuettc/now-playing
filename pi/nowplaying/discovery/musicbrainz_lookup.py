@@ -19,6 +19,7 @@ import asyncio
 import logging
 import time
 import urllib.parse
+from collections import Counter
 from typing import Optional
 
 import aiohttp
@@ -30,11 +31,24 @@ from nowplaying.discovery.schema import (
     open_ro,
     open_rw,
 )
+from nowplaying.titleclean import clean_title as _clean_title
 
 log = logging.getLogger("nowplaying.discovery")
 
 USER_AGENT = coverart.USER_AGENT
 _NEGATIVE_TTL_S = 7 * 24 * 3600
+
+# Serialises recording_length_by_isrc HTTP calls to honour MusicBrainz's
+# 1 req/s rate limit. Lazy-initialised (same pattern as art_cache._get_semaphore)
+# to avoid creating the Semaphore at import time when no event loop is running.
+_mb_rate_limit: asyncio.Semaphore | None = None
+
+
+def _get_mb_rate_limit() -> asyncio.Semaphore:
+    global _mb_rate_limit
+    if _mb_rate_limit is None:
+        _mb_rate_limit = asyncio.Semaphore(1)
+    return _mb_rate_limit
 
 # Sides A..Z by medium ordinal; single-medium vinyl releases come out
 # as A1, A2, ... — downstream consumers treat the tracklist opaquely,
@@ -129,6 +143,50 @@ def _walk_media_to_tracks(media: list[dict]) -> list[dict]:
 
 
 # ── Public lookups ─────────────────────────────────────────────────────
+
+
+def _pick_recording_length(recordings: list[dict]) -> int | None:
+    """Best-effort duration (seconds) from MB recording-search results.
+    Restrict to recordings that have a length and the max MB score; among
+    those pick the most common length, tie-break shortest. None if no
+    candidate has a length."""
+    cand = [r for r in recordings if r.get("length")]
+    if not cand:
+        return None
+    top = max(int(r.get("score") or 0) for r in cand)
+    lengths = [int(r["length"]) for r in cand if int(r.get("score") or 0) == top]
+    counts = Counter(lengths)
+    best_ms = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+    return round(best_ms / 1000)
+
+
+async def recording_length_by_isrc(isrc: str, *, timeout_s: float = 15.0) -> int | None:
+    """Look up the recognized recording's length (seconds) by ISRC via
+    MusicBrainz recording search. Returns None on no ISRC, no match, no
+    length, or any network/parse error. Distinct from `lookup_by_isrc`
+    (which walks to a release); this only reads the recording length."""
+    if not isrc:
+        return None
+    query = urllib.parse.quote(f"isrc:{isrc}")
+    url = (
+        f"https://musicbrainz.org/ws/2/recording/?query={query}"
+        f"&fmt=json&limit=10"
+    )
+    headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+    try:
+        timeout = aiohttp.ClientTimeout(total=timeout_s)
+        async with _get_mb_rate_limit():
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url, headers=headers) as resp:  # skylos: ignore SKY-D216 — url built from hardcoded musicbrainz.org template; only ISRC interpolated via urllib.quote
+                    if resp.status != 200:
+                        log.info("isrc-duration: isrc=%s status=%d", isrc, resp.status)
+                        return None
+                    data = await resp.json()
+            await asyncio.sleep(1.0)  # enforce 1 req/s inside the semaphore
+    except Exception as e:  # noqa: BLE001 — network/parse: log + None
+        log.info("isrc-duration: isrc=%s lookup failed: %r", isrc, e)
+        return None
+    return _pick_recording_length(data.get("recordings") or [])
 
 
 async def lookup_by_isrc(
@@ -339,10 +397,16 @@ async def persist(release: dict) -> None:
     mbid = release.get("mbid")
     if not mbid:
         return
-    await asyncio.to_thread(_persist_sync, release)
+    tracks = release.get("tracks") or []
+    # Clean all track titles before handing off to the sync writer.
+    cleaned: list[tuple[str, str]] = []
+    for t in tracks:
+        raw = t.get("title") or ""
+        cleaned.append(_clean_title(raw))
+    await asyncio.to_thread(_persist_sync, release, cleaned)
 
 
-def _persist_sync(release: dict) -> None:
+def _persist_sync(release: dict, cleaned: list[tuple[str, str]]) -> None:
     mbid = release["mbid"]
     artist = release.get("artist") or ""
     title = release.get("album") or ""
@@ -365,15 +429,18 @@ def _persist_sync(release: dict) -> None:
             con.execute(
                 "DELETE FROM tracks WHERE mbid = ?", (mbid,),
             )
-            for t in tracks:
+            for t, (clean, source) in zip(tracks, cleaned):
                 con.execute(
                     "INSERT INTO tracks "
-                    "(mbid, position, side, title, duration_seconds) "
-                    "VALUES (?, ?, ?, ?, ?)",
+                    "(mbid, position, side, title, duration_seconds, "
+                    "clean_title, clean_title_source) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (mbid, t.get("position") or "",
                      t.get("side"),
                      t.get("title") or "",
-                     t.get("duration_seconds")),
+                     t.get("duration_seconds"),
+                     clean,
+                     source),
                 )
             con.commit()
         except Exception:
@@ -426,6 +493,7 @@ __all__ = [
     "DISCOVERED_DB_PATH",
     "lookup_by_isrc",
     "lookup_by_artist_album",
+    "recording_length_by_isrc",
     "persist",
     "find_discovered_release_by_artist_album",
 ]

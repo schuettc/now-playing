@@ -67,7 +67,21 @@ dev-dependencies = [
     "ruff>=0.6",
     "pytest>=8",
     "pytest-asyncio>=0.24",
+    # Parallelism + per-worker memory isolation, and a hard per-test wall so a
+    # blocking syscall (e.g. the FIFO open in test_io_safe) can't peg the
+    # machine. See [tool.pytest.ini_options] below.
+    "pytest-xdist>=3.6",
+    "pytest-timeout>=2.3",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# -n auto: fan out across cores into worker processes that hold (and release)
+#   memory per batch instead of one process accumulating to ~15 GB.
+# --timeout: a hung/blocking test dies at 60s instead of running forever.
+#   signal method (SIGALRM, per-worker main thread) can interrupt blocking
+#   syscalls like a FIFO open(), which the thread method cannot.
+addopts = "-n auto --timeout=60 --timeout-method=signal"
 
 [tool.skylos]
 # Globally suppress rule IDs that are categorically false positives or are

@@ -6,18 +6,27 @@ cleanup sites in main.py. See docs/features/manual-override-track-pin/.
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from aiohttp import web
 
 _PI_ROOT = Path(__file__).resolve().parents[1]
 if str(_PI_ROOT) not in sys.path:
     sys.path.insert(0, str(_PI_ROOT))
 
+from nowplaying import control  # noqa: E402
 from nowplaying.main import (  # noqa: E402
-    PIN_DIFFERENT_TRACK_RELEASE_STREAK,
     PIN_TTL_BUFFER_S,
     State,
     _evaluate_user_pin,
+)
+from nowplaying.orchestrator.pin import (  # noqa: E402
+    ASSUMED_LOCK_POSITION_S,
+    LOCK_DECAY_WINDOW_S,
+    _remaining_and_confidence,
 )
 
 
@@ -128,16 +137,19 @@ def test_pin_expires_immediately_past_computed_ttl():
     let promotion capture refs under the now-wrong label during track
     transitions (minor cohort poisoning).
     """
+    # Same-position hit isolates the TTL boundary from the streak/confidence
+    # path (a different-position hit on this short, low-confidence hold would
+    # clear on its own — see the decay tests).
     pin = _pin(monotonic_ts=1000.0, duration_seconds=10)
-    action, _, reason = _evaluate_user_pin(pin, 0, 1, "A1", 1010.01)
+    action, _, reason = _evaluate_user_pin(pin, 0, 1, "A2", 1010.01)
     assert action == "clear"
     assert reason == "ttl"
     # And it must still be honored a hair before the TTL.
     action_before, _, reason_before = _evaluate_user_pin(
-        pin, 0, 1, "A1", 1009.99,
+        pin, 0, 1, "A2", 1009.99,
     )
     assert action_before == "honor"
-    assert reason_before == "different_position"
+    assert reason_before == "same_position"
 
 
 def test_different_release_takes_precedence_over_same_position_normalization():
@@ -156,15 +168,46 @@ def test_state_initializes_pin_fields():
     assert s.pin_different_track_streak == 0
 
 
+# ---- _remaining_and_confidence (shared track-remaining + confidence primitive)
+
+
+def test_remaining_and_confidence_none_duration_is_open_ended():
+    assert _remaining_and_confidence(1000.0, None, 1000.0) == (None, "high")
+
+
+def test_remaining_and_confidence_high_during_confident_hold():
+    # 200s hold, just started → ~200s left, well before the decay window → high.
+    remaining, conf = _remaining_and_confidence(1000.0, 200, 1000.0)
+    assert remaining == 200.0
+    assert conf == "high"
+
+
+def test_remaining_and_confidence_ramps_medium_then_low_in_decay():
+    # decay window = min(LOCK_DECAY_WINDOW_S, 200/2) = 45s → starts at 45s left.
+    # 30s left → first half of the window → medium.
+    _, mid = _remaining_and_confidence(1000.0, 200, 1000.0 + 170)
+    assert mid == "medium"
+    # 10s left → second half → low.
+    _, low = _remaining_and_confidence(1000.0, 200, 1000.0 + 190)
+    assert low == "low"
+
+
+def test_remaining_and_confidence_negative_past_end():
+    remaining, conf = _remaining_and_confidence(1000.0, 200, 1000.0 + 210)
+    assert remaining == -10.0       # past the hold's end
+    assert conf == "low"
+
+
+def test_remaining_and_confidence_decay_window_bounded_for_short_hold():
+    # 20s hold → decay window bounded to 10s (half), so a confident phase exists.
+    _, early = _remaining_and_confidence(1000.0, 20, 1000.0 + 5)   # 15s left
+    assert early == "high"
+    _, late = _remaining_and_confidence(1000.0, 20, 1000.0 + 16)   # 4s left
+    assert late in ("medium", "low")
+    assert LOCK_DECAY_WINDOW_S == 45  # guards the constant the bound caps against
+
+
 # ---- control.py cleanup sites (mark_wrong, next_track, select_release)
-
-
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
-
-from aiohttp import web
-
-from nowplaying import control
 
 
 def _mk_request(state, body):
@@ -290,11 +333,12 @@ def test_honor_path_patches_full_identity_fields():
 
 
 def test_identify_clip_stores_duration_on_last_vinyl():
-    """identify_clip stores full-duration TTL for fresh-start pins.
+    """identify_clip stores the scaling-lock hold and the raw display duration.
 
-    # Why: docs/features/pin-ttl-35s-phantom-elapsed/. The identify flow
-    # passes track_started_at_iso=None, so TTL is the full track duration.
-    # last_vinyl["duration_seconds"] is the raw track duration for display.
+    With no reliable position cue the lock assumes ASSUMED_LOCK_POSITION_S into
+    the track, so user_track_pin's hold is duration − that, while
+    last_vinyl["duration_seconds"] keeps the raw track duration for display.
+    See docs/features/advance-on-shazam-quiet-records/.
     """
     state = State()
     rel = {
@@ -312,7 +356,7 @@ def test_identify_clip_stores_duration_on_last_vinyl():
     assert state.last_vinyl is not None
     assert state.last_vinyl["duration_seconds"] == 540
     assert state.last_vinyl["side"] == "B"
-    assert state.user_track_pin["duration_seconds"] == 540
+    assert state.user_track_pin["duration_seconds"] == 540 - ASSUMED_LOCK_POSITION_S
 
 
 def test_next_track_does_not_create_pin_when_none_active():

@@ -15,7 +15,7 @@ from urllib.parse import urlencode
 
 import recognize_proto
 
-from nowplaying import art_overrides, history
+from nowplaying import art_overrides
 from nowplaying.discogs import catalog as discogs_catalog
 from nowplaying.sonos.listener import poll_queue, poll_track
 from nowplaying.vinyl import fingerprint as _fp
@@ -23,8 +23,38 @@ from nowplaying.orchestrator.streaming_idle import (
     HEARTBEAT_INTERVAL_S,
     RECOGNITION_LEAD_S,
 )
+from nowplaying.orchestrator.prediction import enrich_guess_contract
 
 log = logging.getLogger("nowplaying.main")
+
+
+def _apply_clean_display_title(payload: dict) -> None:
+    """Rewrite display titles to the cleaned ``clean_title`` (mix/remaster/
+    year annotations stripped): both the top-level now-playing title AND
+    every tracklist entry's title (the kiosk renders each row's ``title``).
+
+    Central choke point: every vinyl publish routes through
+    ``_anchor_and_publish``, so cleaning here covers all cascade branches
+    uniformly — recognize, F3/F4 fingerprint, predicted-advance, needs-id —
+    instead of relying on each payload builder to clean its own title.
+    Safe to overwrite display titles here: upstream position matching uses
+    fresh catalog data (not this payload), and advance/F3 match by position,
+    not title. No-op for entries without a ``clean_title``.
+    """
+    tracklist = payload.get("tracklist") or []
+    for tr in tracklist:
+        clean = tr.get("clean_title")
+        if clean:
+            tr["title"] = clean
+    pos = payload.get("track_position")
+    if not pos:
+        return
+    for tr in tracklist:
+        if (tr.get("position") or tr.get("track_position")) == pos:
+            clean = tr.get("clean_title")
+            if clean:
+                payload["title"] = clean
+            return
 
 
 def _art_url_for_release(release_id: int) -> str:
@@ -81,6 +111,7 @@ class PublishEnrichmentMixin:
         # position yet — NEEDS_ID payloads). Otherwise drop silently.
         if published_pos is None or guess_pos == published_pos:
             payload["guess"] = state.pending_guess
+            enrich_guess_contract(payload)
         state.pending_guess = None
 
     def _adopt_heuristic_anchor(self, payload: dict, identity: tuple) -> None:
@@ -124,6 +155,10 @@ class PublishEnrichmentMixin:
         hits get a heuristic anchor derived from match latency.
         """
         state = self.state
+        # Central display-title cleaning — every publish path lands here, so
+        # all cascade branches show the cleaned title (not just the builders
+        # that were patched individually).
+        _apply_clean_display_title(payload)
         precise = payload.get("track_started_at")
         identity = (
             payload.get("artist"),
@@ -142,6 +177,7 @@ class PublishEnrichmentMixin:
             payload["track_started_at"] = state.track_started_at
             self._attach_pending_guess(payload)
             self._attach_learned_fingerprint_count(payload)
+            self._keep_locked_track_confirmed(payload)
             return payload
         if has_id and identity != state.last_published_identity:
             self._adopt_heuristic_anchor(payload, identity)
@@ -149,7 +185,37 @@ class PublishEnrichmentMixin:
             payload["track_started_at"] = state.track_started_at
         self._attach_pending_guess(payload)
         self._attach_learned_fingerprint_count(payload)
+        self._keep_locked_track_confirmed(payload)
         return payload
+
+    def _keep_locked_track_confirmed(self, payload: dict) -> None:
+        """A track the user locked must render confirmed — never as a guess —
+        for as long as it's the track on screen, even after its hold decays.
+
+        When a predicted/guess publish targets the SAME (release, position) as
+        the active user pin, it's the locked track re-asserting itself (the
+        window estimate is still inside it), not a new guess: strip the
+        ``predicted`` flag and restore the confirmed identity. Decay governs
+        yielding to a *different* track, not relabeling the locked one. A
+        same-position predicted-advance is therefore a display no-op.
+        See docs/features/locked-track-stays-confirmed/.
+        """
+        if not payload.get("predicted"):
+            return
+        pin = self.state.user_track_pin
+        if not isinstance(pin, dict):
+            return
+        same = (
+            payload.get("release_id") == pin.get("release_id")
+            and (payload.get("track_position") or "").strip().upper()
+            == (pin.get("track_position") or "").strip().upper()
+        )
+        if not same:
+            return
+        payload["predicted"] = False
+        payload["match_method"] = "user-identified"
+        payload["match_confidence"] = "user"
+        payload.pop("guess", None)
 
     def _enrich_sonos_with_discogs(self, payload: dict) -> dict:
         """If an AirPlay or streaming payload has artist + title but no
@@ -327,7 +393,6 @@ class PublishEnrichmentMixin:
         the vinyl path. AirPlay-without-metadata also falls through to
         the audio path. TV / radio push their own events.
         """
-        state = self.state
         stop = self.stop
         sonos_coord = self.sonos_coord
         if sonos_coord is None:

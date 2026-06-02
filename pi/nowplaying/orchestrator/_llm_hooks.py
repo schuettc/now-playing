@@ -16,10 +16,7 @@ from __future__ import annotations
 from nowplaying.orchestrator.llm._reverse_lookup import ReverseLookupMixin
 from nowplaying.orchestrator.llm._shazam_relevance import ShazamRelevanceMixin
 from nowplaying.orchestrator.llm._track_change import TrackChangeMixin
-from nowplaying.orchestrator.llm._track_guess import (
-    TrackGuessMixin,
-    _next_side_in_progression,  # noqa: F401 — re-export; tests import this name directly
-)
+from nowplaying.orchestrator.llm._track_guess import TrackGuessMixin
 
 
 class LLMHooksMixin(
