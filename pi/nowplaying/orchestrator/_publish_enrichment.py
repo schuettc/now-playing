@@ -177,6 +177,7 @@ class PublishEnrichmentMixin:
             payload["track_started_at"] = state.track_started_at
             self._attach_pending_guess(payload)
             self._attach_learned_fingerprint_count(payload)
+            self._keep_locked_track_confirmed(payload)
             return payload
         if has_id and identity != state.last_published_identity:
             self._adopt_heuristic_anchor(payload, identity)
@@ -184,7 +185,37 @@ class PublishEnrichmentMixin:
             payload["track_started_at"] = state.track_started_at
         self._attach_pending_guess(payload)
         self._attach_learned_fingerprint_count(payload)
+        self._keep_locked_track_confirmed(payload)
         return payload
+
+    def _keep_locked_track_confirmed(self, payload: dict) -> None:
+        """A track the user locked must render confirmed — never as a guess —
+        for as long as it's the track on screen, even after its hold decays.
+
+        When a predicted/guess publish targets the SAME (release, position) as
+        the active user pin, it's the locked track re-asserting itself (the
+        window estimate is still inside it), not a new guess: strip the
+        ``predicted`` flag and restore the confirmed identity. Decay governs
+        yielding to a *different* track, not relabeling the locked one. A
+        same-position predicted-advance is therefore a display no-op.
+        See docs/features/locked-track-stays-confirmed/.
+        """
+        if not payload.get("predicted"):
+            return
+        pin = self.state.user_track_pin
+        if not isinstance(pin, dict):
+            return
+        same = (
+            payload.get("release_id") == pin.get("release_id")
+            and (payload.get("track_position") or "").strip().upper()
+            == (pin.get("track_position") or "").strip().upper()
+        )
+        if not same:
+            return
+        payload["predicted"] = False
+        payload["match_method"] = "user-identified"
+        payload["match_confidence"] = "user"
+        payload.pop("guess", None)
 
     def _enrich_sonos_with_discogs(self, payload: dict) -> dict:
         """If an AirPlay or streaming payload has artist + title but no
