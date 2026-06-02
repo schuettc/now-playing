@@ -21,7 +21,6 @@ from nowplaying.orchestrator.streaming_idle import (
     STREAMING_IDLE_DELAY_S,
     VINYL_IDLE_DELAY_S,
     _evaluate_sticky_idle,
-    _is_music_level,
     _should_arm_streaming_idle,
     _should_cancel_streaming_idle_on_resume,
     _should_pause_capture,

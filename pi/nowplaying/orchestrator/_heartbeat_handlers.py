@@ -43,7 +43,7 @@ from nowplaying.orchestrator.streaming_idle import (
 )
 
 if TYPE_CHECKING:
-    from nowplaying.orchestrator.state import State
+    pass
 
 log = logging.getLogger("nowplaying.main")
 
