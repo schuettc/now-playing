@@ -23,7 +23,11 @@ from nowplaying.main import (  # noqa: E402
     State,
     _evaluate_user_pin,
 )
-from nowplaying.orchestrator.pin import ASSUMED_LOCK_POSITION_S  # noqa: E402
+from nowplaying.orchestrator.pin import (  # noqa: E402
+    ASSUMED_LOCK_POSITION_S,
+    LOCK_DECAY_WINDOW_S,
+    _remaining_and_confidence,
+)
 
 
 def _pin(release_id=1, position="A2", monotonic_ts=1000.0, duration_seconds=180):
@@ -162,6 +166,45 @@ def test_state_initializes_pin_fields():
     s = State()
     assert s.user_track_pin is None
     assert s.pin_different_track_streak == 0
+
+
+# ---- _remaining_and_confidence (shared track-remaining + confidence primitive)
+
+
+def test_remaining_and_confidence_none_duration_is_open_ended():
+    assert _remaining_and_confidence(1000.0, None, 1000.0) == (None, "high")
+
+
+def test_remaining_and_confidence_high_during_confident_hold():
+    # 200s hold, just started → ~200s left, well before the decay window → high.
+    remaining, conf = _remaining_and_confidence(1000.0, 200, 1000.0)
+    assert remaining == 200.0
+    assert conf == "high"
+
+
+def test_remaining_and_confidence_ramps_medium_then_low_in_decay():
+    # decay window = min(LOCK_DECAY_WINDOW_S, 200/2) = 45s → starts at 45s left.
+    # 30s left → first half of the window → medium.
+    _, mid = _remaining_and_confidence(1000.0, 200, 1000.0 + 170)
+    assert mid == "medium"
+    # 10s left → second half → low.
+    _, low = _remaining_and_confidence(1000.0, 200, 1000.0 + 190)
+    assert low == "low"
+
+
+def test_remaining_and_confidence_negative_past_end():
+    remaining, conf = _remaining_and_confidence(1000.0, 200, 1000.0 + 210)
+    assert remaining == -10.0       # past the hold's end
+    assert conf == "low"
+
+
+def test_remaining_and_confidence_decay_window_bounded_for_short_hold():
+    # 20s hold → decay window bounded to 10s (half), so a confident phase exists.
+    _, early = _remaining_and_confidence(1000.0, 20, 1000.0 + 5)   # 15s left
+    assert early == "high"
+    _, late = _remaining_and_confidence(1000.0, 20, 1000.0 + 16)   # 4s left
+    assert late in ("medium", "low")
+    assert LOCK_DECAY_WINDOW_S == 45  # guards the constant the bound caps against
 
 
 # ---- control.py cleanup sites (mark_wrong, next_track, select_release)

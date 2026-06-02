@@ -83,6 +83,31 @@ def _pin_confidence(pin: dict, now_mono: float) -> str:
     return "medium" if frac < 0.5 else "low"
 
 
+def _remaining_and_confidence(
+    monotonic_ts: float, duration_seconds: float | None, now_mono: float,
+) -> tuple[float | None, str]:
+    """Shared track-remaining + confidence primitive (epic
+    consolidate-guess-confidence-lifetime, child C1).
+
+    Operates on anything modeled as a *hold* — a user pin, or a dead-reckoned
+    guess whose ``duration_seconds`` is the estimated remaining track time at
+    guess time. Returns ``(seconds_remaining, confidence)`` where confidence is
+    'high' through the confident hold, ramping 'medium' then 'low' across the
+    bounded decay window as the hold runs out. ``duration_seconds=None`` →
+    ``(None, 'high')`` (open-ended hold). ``seconds_remaining`` may go negative
+    once the hold is past its end; callers clamp/treat ≤0 as expired.
+
+    This is the single decay model for both locks and guesses — the lock path
+    (``_pin_in_decay`` / ``_pin_confidence``) and the guess payload both derive
+    their confidence + lifetime from it.
+    """
+    if duration_seconds is None:
+        return (None, "high")
+    remaining = float(duration_seconds) - (now_mono - monotonic_ts)
+    obj = {"monotonic_ts": monotonic_ts, "duration_seconds": duration_seconds}
+    return (remaining, _pin_confidence(obj, now_mono))
+
+
 def compute_pin_duration(
     duration_seconds: int | None,
     track_started_at_iso: str | None,
