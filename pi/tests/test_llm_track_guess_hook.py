@@ -18,7 +18,6 @@ from unittest import mock
 
 import pytest
 
-from nowplaying import llm
 from nowplaying.llm import (
     LLMAssist,
     TrackGuess,
@@ -326,6 +325,74 @@ def test_cum_start_s_sums_preceding_durations():
     assert _cum_start_s(side, "Z9") is None
 
 
+def test_position_for_side_offset_interval_lookup():
+    """Deterministic interval lookup — the always-correct replacement for the
+    LLM's botched comparison. The est=100 case is exactly the one the LLM got
+    wrong (it placed 100 in A2's [190,367] window)."""
+    from nowplaying.orchestrator.llm._track_guess import _position_for_side_offset
+    side = [
+        {"position": "A1", "duration_seconds": 190},
+        {"position": "A2", "duration_seconds": 177},
+        {"position": "A3", "duration_seconds": 48},
+    ]
+    assert _position_for_side_offset(side, 0) == "A1"
+    assert _position_for_side_offset(side, 100) == "A1"   # LLM wrongly said A2
+    assert _position_for_side_offset(side, 189) == "A1"
+    assert _position_for_side_offset(side, 190) == "A2"   # boundary → next track
+    assert _position_for_side_offset(side, 300) == "A2"
+    assert _position_for_side_offset(side, 367) == "A3"
+    assert _position_for_side_offset(side, 999) == "A3"   # overflow → last track
+    assert _position_for_side_offset([], 50) is None
+
+
+def test_guard_no_backward_side_pos():
+    """A guess earlier on the side than the current track is clamped to the
+    current track — a record can't play backward (the live B4→B2 case).
+    Forward guesses, same-track, and off-side positions pass through."""
+    from nowplaying.orchestrator.llm._track_guess import TrackGuessMixin
+    side = [
+        {"position": "B1"}, {"position": "B2"}, {"position": "B3"},
+        {"position": "B4"}, {"position": "B5"},
+    ]
+    g = TrackGuessMixin._guard_no_backward_side_pos
+    assert g(side, "B4", "B2") == "B4"   # backward → hold current
+    assert g(side, "B4", "B5") == "B5"   # forward → allow
+    assert g(side, "B4", "B4") == "B4"   # same → allow
+    assert g(side, None, "B2") == "B2"   # no current track → no guard
+    assert g(side, "B4", "Z9") == "Z9"   # guessed pos not on side → no guard
+    assert g(side, "C1", "B2") == "B2"   # current off-side (flip) → no guard
+
+
+def test_try_window_track_guess_holds_on_backward_estimate(monkeypatch):
+    """Wiring: when the side-position estimate collapses and the window lands
+    on a track earlier than the current one, the guess holds the current track
+    instead of jumping backward (regression for the live B4 'She Hates My Job'
+    → B2 'Lead Pipe Cinch' jump)."""
+    orch = _make_orch(llm_enabled=False)
+    side = [
+        {"position": "B1", "title": "Fine And Good", "duration_seconds": 249},
+        {"position": "B2", "title": "Lead Pipe Cinch", "duration_seconds": 65},
+        {"position": "B3", "title": "Cool Magnet", "duration_seconds": 248},
+        {"position": "B4", "title": "She Hates My Job", "duration_seconds": 249},
+        {"position": "B5", "title": "Stoney", "duration_seconds": 102},
+    ]
+    orch.state.last_vinyl = {"track_position": "B4", "tracklist": side}
+    # Collapsed estimate (267s) lands in B2's window — the backward jump.
+    monkeypatch.setattr(
+        orch, "_estimate_side_position_s",
+        lambda *a, **k: 267.0, raising=True,
+    )
+    # Not testing dismissal here (it needs a running loop) — short-circuit it.
+    monkeypatch.setattr(
+        orch, "_guess_is_dismissed_for", lambda *a, **k: False, raising=True,
+    )
+    title_for = orch._make_title_for(side)
+    guess = orch._try_window_track_guess(orch.state, 12520688, side, title_for, 267.0)
+    assert guess is not None
+    assert guess["position"] == "B4"          # held, NOT B2
+    assert guess["title"] == "She Hates My Job"
+
+
 def test_estimate_side_position_pin_anchored(monkeypatch):
     """A live pin anchors the estimate to the confirmed track's cumulative
     start + how far into it + pin age — stable across predicted-advance drift."""
@@ -469,57 +536,6 @@ def test_compute_track_guess_resolves_title_from_position_keyed_tracklist():
     )
 
 
-def test_compute_track_guess_resolves_title_from_tracklist_llm_path(keyed_env):
-    """LLM picks A3 → helper resolves title from tracklist."""
-    orch = _make_orch(llm_enabled=True)
-    orch.state.last_vinyl = {
-        "artist": "Joy Division", "album": "Closer", "release_id": 12345,
-        "side": "A", "title": "Heart and Soul",
-        "tracklist": _TRACKLIST,
-    }
-    fake_client = mock.MagicMock()
-    fake_client.messages.create = mock.AsyncMock(
-        return_value=_fake_tool_use_response(
-            "judge_track_guess",
-            {"position": "A3", "confidence": "high", "reason": "elapsed matches"},
-        ),
-    )
-    orch.llm._client = fake_client
-    with mock.patch(
-        "nowplaying.history.recent", return_value=[],
-    ):
-        g = _run(orch._compute_track_guess(orch.state))
-    assert g["position"] == "A3"
-    assert g["title"] == "Passover"
-    assert g["source"] == "llm"
-    assert g["confidence"] == "high"
-    assert "alt" not in g
-
-
-def test_compute_track_guess_attaches_alt_for_medium(keyed_env):
-    orch = _make_orch(llm_enabled=True)
-    orch.state.last_vinyl = {
-        "artist": "Joy Division", "album": "Closer", "release_id": 12345,
-        "side": "A", "title": "Heart and Soul",
-        "tracklist": _TRACKLIST,
-    }
-    fake_client = mock.MagicMock()
-    fake_client.messages.create = mock.AsyncMock(
-        return_value=_fake_tool_use_response(
-            "judge_track_guess",
-            {
-                "position": "A2", "confidence": "medium",
-                "alt": {"position": "A3"}, "reason": "two candidates",
-            },
-        ),
-    )
-    orch.llm._client = fake_client
-    with mock.patch("nowplaying.history.recent", return_value=[]):
-        g = _run(orch._compute_track_guess(orch.state))
-    assert g["confidence"] == "medium"
-    assert g["alt"] == {"position": "A3", "title": "Passover"}
-
-
 def test_pending_guess_attached_at_publish_time():
     """Stashed guess attaches to the next published payload via
     `_anchor_and_publish` and is cleared after consumption."""
@@ -590,49 +606,6 @@ def test_compute_elapsed_since_audible_up_returns_zero_when_unset():
     assert LLMHooksMixin._compute_elapsed_since_audible_up_s(None) == 0.0
 
 
-def test_two_clocks_diverge_after_predicted_advance(monkeypatch):
-    """Regression: after a mid-side predicted-advance refreshes
-    track_started_at, the audible-up clock keeps counting from the
-    original needle-drop. The two clocks diverge — that's the signal
-    the LLM needs to NOT infer "side just started."
-
-    Captured live during Donuts side B 2026-05-21: judge_track_guess
-    saw "elapsed=0" after a predicted-advance and reasoned "side just
-    started → B1" while the user was actually 5 minutes into side B.
-    """
-    from nowplaying.orchestrator._llm_hooks import LLMHooksMixin
-    import asyncio
-    from datetime import datetime, timedelta, timezone
-
-    class _FakeLoop:
-        def time(self) -> float:
-            return 1000.0
-    monkeypatch.setattr(asyncio, "get_event_loop", lambda: _FakeLoop())
-
-    # Scenario:
-    #   - User dropped needle 300s ago → audible_up_at_mono = 700.0
-    #   - Mid-side predicted-advance just refreshed track_started_at 5s ago
-    #   - The "since last confirm" clock now reads ~5s
-    #   - The "since audible up" clock should still read 300s
-    audible_up = 700.0  # 300s ago by monotonic clock
-    track_started_at_iso = (
-        (datetime.now(timezone.utc) - timedelta(seconds=5))
-        .isoformat(timespec="seconds")
-        .replace("+00:00", "Z")
-    )
-
-    since_up = LLMHooksMixin._compute_elapsed_since_audible_up_s(audible_up)
-    since_confirm = LLMHooksMixin._compute_elapsed_since_last_confirm_s(
-        track_started_at_iso,
-    )
-    assert since_up == 300.0
-    assert 0 < since_confirm < 20  # ~5s with some test wall-clock slack
-    assert since_up > since_confirm + 100, (
-        "two clocks must diverge significantly when track_started_at "
-        "was refreshed mid-side"
-    )
-
-
 # ── Side-flip detection (Option 1) ─────────────────────────────────────
 
 
@@ -648,198 +621,6 @@ _TWO_SIDE_TRACKLIST = [
     {"track_position": "B3", "side": "B", "title": "Twenty Four Hours", "duration_seconds": 270},
     {"track_position": "B4", "side": "B", "title": "The Eternal", "duration_seconds": 400},
 ]
-
-
-def _orch_with_catalog(*, locked_pos: str, locked_side: str, llm_enabled: bool = True):
-    """Build a minimal orch with `_load_locked_tracks` patched to return
-    the two-side tracklist."""
-    from nowplaying.main import Orchestrator, State
-    llm_obj = LLMAssist()
-    llm_obj.enabled = llm_enabled
-    orch = Orchestrator.__new__(Orchestrator)
-    orch.llm = llm_obj
-    orch.state = State()
-    orch.state.last_vinyl = {
-        "artist": "Joy Division", "album": "Closer", "release_id": 12345,
-        "side": locked_side, "track_position": locked_pos, "title": "X",
-        "tracklist": [t for t in _TWO_SIDE_TRACKLIST if t["side"] == locked_side],
-    }
-    # Patch _load_locked_tracks on this instance to return the full catalog.
-    orch._load_locked_tracks = lambda _state: list(_TWO_SIDE_TRACKLIST)
-    return orch
-
-
-def test_compute_likely_flip_true_when_deep_and_fresh():
-    """Last confirmed A4 (deep into side A) + audible-up 5s ago → likely_flip=True."""
-    orch = _orch_with_catalog(locked_pos="A4", locked_side="A")
-    flip, opp = orch._compute_likely_flip(orch.state, elapsed_since_audible_up_s=5.0)
-    assert flip is True
-    assert opp == {"position": "B1", "title": "A Means to an End", "side": "B"}
-
-
-def test_compute_likely_flip_false_when_mid_side():
-    """Last confirmed A1 (only 360/1050 ≈ 34% in) + fresh audible-up → False."""
-    orch = _orch_with_catalog(locked_pos="A1", locked_side="A")
-    flip, opp = orch._compute_likely_flip(orch.state, elapsed_since_audible_up_s=5.0)
-    assert flip is False
-    assert opp is None
-
-
-def test_compute_likely_flip_false_when_stale_audible_up():
-    """Deep-into-side last confirm but audible-up was 60s ago → False."""
-    orch = _orch_with_catalog(locked_pos="A4", locked_side="A")
-    flip, opp = orch._compute_likely_flip(orch.state, elapsed_since_audible_up_s=60.0)
-    assert flip is False
-    assert opp is None
-
-
-def test_compute_likely_flip_false_when_no_catalog():
-    """No tracklist available → False, no opposite side."""
-    from nowplaying.main import Orchestrator, State
-    llm_obj = LLMAssist()
-    orch = Orchestrator.__new__(Orchestrator)
-    orch.llm = llm_obj
-    orch.state = State()
-    orch.state.last_vinyl = {
-        "artist": "X", "album": "Y", "release_id": 1,
-        "side": "A", "track_position": "A4", "title": "T",
-        "tracklist": [],
-    }
-    orch._load_locked_tracks = lambda _state: None
-    flip, opp = orch._compute_likely_flip(orch.state, elapsed_since_audible_up_s=5.0)
-    assert flip is False
-    assert opp is None
-
-
-def test_compute_likely_flip_false_when_single_side_catalog():
-    """Catalog only has the locked side (EP / single side) → False."""
-    from nowplaying.main import Orchestrator, State
-    llm_obj = LLMAssist()
-    orch = Orchestrator.__new__(Orchestrator)
-    orch.llm = llm_obj
-    orch.state = State()
-    orch.state.last_vinyl = {
-        "artist": "X", "album": "Y", "release_id": 1,
-        "side": "A", "track_position": "A4", "title": "T",
-        "tracklist": [],
-    }
-    orch._load_locked_tracks = lambda _state: [
-        t for t in _TWO_SIDE_TRACKLIST if t["side"] == "A"
-    ]
-    flip, opp = orch._compute_likely_flip(orch.state, elapsed_since_audible_up_s=5.0)
-    assert flip is False
-    assert opp is None
-
-
-def test_compute_likely_flip_false_at_end_of_one_lp():
-    """Locked on B4 (deep into B) of a 1-LP (A/B only) → no next side
-    in physical progression → likely_flip=False. The record is over;
-    the LLM must NOT be told the user flipped back to A.
-
-    See docs/features/llm-track-guess-side-progression-not-flip/.
-    """
-    orch = _orch_with_catalog(locked_pos="B4", locked_side="B")
-    flip, opp = orch._compute_likely_flip(orch.state, elapsed_since_audible_up_s=5.0)
-    assert flip is False
-    assert opp is None
-
-
-# Four-side (2-LP) catalog for progression tests. Each side has 4 tracks
-# summing past the 50% deep-into-side mark when locked on the last track.
-_FOUR_SIDE_TRACKLIST = [
-    {"track_position": "A1", "side": "A", "title": "Atrocity Exhibition", "duration_seconds": 360},
-    {"track_position": "A2", "side": "A", "title": "Isolation", "duration_seconds": 170},
-    {"track_position": "A3", "side": "A", "title": "Passover", "duration_seconds": 290},
-    {"track_position": "A4", "side": "A", "title": "Colony", "duration_seconds": 230},
-    {"track_position": "B1", "side": "B", "title": "A Means to an End", "duration_seconds": 250},
-    {"track_position": "B2", "side": "B", "title": "Heart and Soul", "duration_seconds": 350},
-    {"track_position": "B3", "side": "B", "title": "Twenty Four Hours", "duration_seconds": 270},
-    {"track_position": "B4", "side": "B", "title": "The Eternal", "duration_seconds": 400},
-    {"track_position": "C1", "side": "C", "title": "Side C Opener", "duration_seconds": 300},
-    {"track_position": "C2", "side": "C", "title": "Side C Two", "duration_seconds": 300},
-    {"track_position": "C3", "side": "C", "title": "Side C Three", "duration_seconds": 300},
-    {"track_position": "C4", "side": "C", "title": "Side C Four", "duration_seconds": 300},
-    {"track_position": "D1", "side": "D", "title": "Side D Opener", "duration_seconds": 300},
-    {"track_position": "D2", "side": "D", "title": "Side D Two", "duration_seconds": 300},
-    {"track_position": "D3", "side": "D", "title": "Side D Three", "duration_seconds": 300},
-    {"track_position": "D4", "side": "D", "title": "Side D Four", "duration_seconds": 300},
-]
-
-
-def _orch_with_four_side_catalog(*, locked_pos: str, locked_side: str):
-    """Like ``_orch_with_catalog`` but for a 2-LP (A/B/C/D) catalog."""
-    from nowplaying.main import Orchestrator, State
-    llm_obj = LLMAssist()
-    llm_obj.enabled = True
-    orch = Orchestrator.__new__(Orchestrator)
-    orch.llm = llm_obj
-    orch.state = State()
-    orch.state.last_vinyl = {
-        "artist": "Joy Division", "album": "Closer", "release_id": 12345,
-        "side": locked_side, "track_position": locked_pos, "title": "X",
-        "tracklist": [t for t in _FOUR_SIDE_TRACKLIST if t["side"] == locked_side],
-    }
-    orch._load_locked_tracks = lambda _state: list(_FOUR_SIDE_TRACKLIST)
-    return orch
-
-
-def test_compute_likely_flip_from_side_b_resolves_side_c_on_two_lp():
-    """2-LP, locked deep on B → next side in progression is C, not A."""
-    orch = _orch_with_four_side_catalog(locked_pos="B4", locked_side="B")
-    flip, opp = orch._compute_likely_flip(orch.state, elapsed_since_audible_up_s=5.0)
-    assert flip is True
-    assert opp == {"position": "C1", "title": "Side C Opener", "side": "C"}
-
-
-def test_compute_likely_flip_false_at_end_of_two_lp():
-    """2-LP, locked deep on D (last side) → record over → likely_flip=False."""
-    orch = _orch_with_four_side_catalog(locked_pos="D4", locked_side="D")
-    flip, opp = orch._compute_likely_flip(orch.state, elapsed_since_audible_up_s=5.0)
-    assert flip is False
-    assert opp is None
-
-
-# ── _next_side_in_progression unit tests ───────────────────────────────
-
-
-def test_next_side_in_progression_one_lp_a_to_b():
-    from nowplaying.orchestrator._llm_hooks import _next_side_in_progression
-    assert _next_side_in_progression("A", ["B"]) == "B"
-
-
-def test_next_side_in_progression_one_lp_b_is_end():
-    from nowplaying.orchestrator._llm_hooks import _next_side_in_progression
-    assert _next_side_in_progression("B", ["A"]) == ""
-
-
-def test_next_side_in_progression_two_lp_a_to_b():
-    from nowplaying.orchestrator._llm_hooks import _next_side_in_progression
-    assert _next_side_in_progression("A", ["B", "C", "D"]) == "B"
-
-
-def test_next_side_in_progression_two_lp_b_to_c():
-    from nowplaying.orchestrator._llm_hooks import _next_side_in_progression
-    assert _next_side_in_progression("B", ["A", "C", "D"]) == "C"
-
-
-def test_next_side_in_progression_two_lp_c_to_d():
-    from nowplaying.orchestrator._llm_hooks import _next_side_in_progression
-    assert _next_side_in_progression("C", ["A", "B", "D"]) == "D"
-
-
-def test_next_side_in_progression_two_lp_d_is_end():
-    from nowplaying.orchestrator._llm_hooks import _next_side_in_progression
-    assert _next_side_in_progression("D", ["A", "B", "C"]) == ""
-
-
-def test_next_side_in_progression_three_lp_d_to_e():
-    from nowplaying.orchestrator._llm_hooks import _next_side_in_progression
-    assert _next_side_in_progression("D", ["A", "B", "C", "E", "F"]) == "E"
-
-
-def test_next_side_in_progression_empty_locked():
-    from nowplaying.orchestrator._llm_hooks import _next_side_in_progression
-    assert _next_side_in_progression("", ["A", "B"]) == ""
 
 
 def test_build_track_guess_prompt_renders_flip_guidance_when_true():
@@ -1007,39 +788,6 @@ def test_compute_track_guess_dead_air_skips_llm(keyed_env, caplog):
         "track-guess: suppressed reason=dead_air" in r.getMessage()
         for r in caplog.records
     )
-
-
-def test_compute_track_guess_mid_side_miss_still_fires(keyed_env):
-    """Regression: mid-side legitimate Shazam-miss (early-into-side) must
-    NOT be suppressed — the dead-air gate is structural, not generic."""
-    orch = _state_for_dead_air(deep=False)
-    orch.state.unmatched_streak = 3
-    for v in (-37.0, -38.0, -39.0):  # below MUSIC_DB (-30) → dead air
-        orch.state.recent_heartbeat_levels.append(v)
-    import asyncio as _asyncio
-
-    class _FakeLoop:
-        def time(self) -> float:
-            return 1000.0
-    real_get = _asyncio.get_event_loop
-    _asyncio.get_event_loop = lambda: _FakeLoop()  # type: ignore[assignment]
-    orch.state.audible_up_at_mono = 800.0  # 200s ago
-    try:
-        fake_client = mock.MagicMock()
-        fake_client.messages.create = mock.AsyncMock(
-            return_value=_fake_tool_use_response(
-                "judge_track_guess",
-                {"position": "A1", "confidence": "high", "reason": "shazam-miss-but-locked"},
-            ),
-        )
-        orch.llm._client = fake_client
-        with mock.patch("nowplaying.history.recent", return_value=[]):
-            g = _run(orch._compute_track_guess(orch.state))
-    finally:
-        _asyncio.get_event_loop = real_get  # type: ignore[assignment]
-    # Gate did not fire (locked track is early on side) → LLM was called → guess returned.
-    assert g is not None
-    assert g["source"] == "llm"
 
 
 # ── End-of-side geometric gate ─────────────────────────────────────────
@@ -1306,49 +1054,6 @@ def test_compute_track_guess_end_of_side_clears_stale_pending_guess(keyed_env):
     assert orch.state.pending_guess is None
 
 
-def test_try_llm_track_guess_forwards_flip_signal(keyed_env):
-    """Integration: when the helper says likely_flip=True, the LLM call
-    receives a prompt with the flip guidance baked in."""
-    orch = _orch_with_catalog(locked_pos="A4", locked_side="A", llm_enabled=True)
-    # Monkey-patch the elapsed-clock helpers so the flip helper sees a
-    # fresh audible-up regardless of test wall-clock.
-    from nowplaying.orchestrator._llm_hooks import LLMHooksMixin
-    captured: dict = {}
-
-    fake_client = mock.MagicMock()
-
-    async def _create(*_args, **kwargs):
-        captured["prompt"] = kwargs["messages"][0]["content"]
-        return _fake_tool_use_response(
-            "judge_track_guess",
-            {"position": "B1", "confidence": "high", "reason": "flipped"},
-        )
-
-    fake_client.messages.create = _create
-    orch.llm._client = fake_client
-
-    with mock.patch.object(
-        LLMHooksMixin, "_compute_elapsed_since_audible_up_s",
-        return_value=5.0,
-    ), mock.patch.object(
-        LLMHooksMixin, "_compute_elapsed_since_last_confirm_s",
-        return_value=5.0,
-    ), mock.patch("nowplaying.history.recent", return_value=[]):
-        title_for = lambda pos: next(  # noqa: E731
-            (t["title"] for t in _TWO_SIDE_TRACKLIST if t["track_position"] == pos), "",
-        )
-        decided, guess = _run(orch._try_llm_track_guess(
-            orch.state, 12345, "A",
-            [t for t in _TWO_SIDE_TRACKLIST if t["side"] == "A"],
-            title_for,
-        ))
-    assert decided is True
-    assert guess is not None
-    assert "likely_flip: true" in captured["prompt"]
-    assert "B1" in captured["prompt"]
-    assert guess["position"] == "B1"
-
-
 # ── Position-ordinal fallback when durations are missing ───────────────────
 
 
@@ -1382,60 +1087,6 @@ def _orch_with_nullduration_catalog(*, locked_pos: str, locked_side: str):
     }
     orch._load_locked_tracks = lambda _state: list(_HUM_TRACKLIST)
     return orch
-
-
-def test_likely_flip_uses_ordinal_fallback_when_durations_missing():
-    """Live regression 2026-05-22: Hum *Downward Is Heavenward* finished
-    side A4 (Ms. Lazarus) and the LLM picked A1 instead of B1 because
-    the depth check returned False when durations are NULL.
-
-    With the position-ordinal fallback, A4 (last of 4 tracks on side A)
-    sits at ordinal 4/4 = 1.0, which is past the 0.5 frac threshold —
-    likely_flip fires and the LLM gets B1 as the next-side hint.
-    """
-    orch = _orch_with_nullduration_catalog(locked_pos="A4", locked_side="A")
-    flip, next_first = orch._compute_likely_flip(
-        orch.state, elapsed_since_audible_up_s=5.0,
-    )
-    assert flip is True
-    assert next_first is not None
-    assert next_first["position"] == "B1"
-    assert next_first["side"] == "B"
-
-
-def test_likely_flip_false_at_mid_side_with_null_durations():
-    """Mid-side last confirm (A2 of 4 tracks = ordinal 2/4 = 0.5) is at
-    the threshold — NOT past it — so likely_flip stays False even with
-    null durations. Conservative: we want the signal only when we're
-    physically NEAR the end of the side."""
-    orch = _orch_with_nullduration_catalog(locked_pos="A2", locked_side="A")
-    flip, _next = orch._compute_likely_flip(
-        orch.state, elapsed_since_audible_up_s=5.0,
-    )
-    assert flip is False
-
-
-def test_likely_flip_progresses_through_multi_lp_with_null_durations():
-    """End of side B on the Hum 2-LP routes to side C — the ordinal
-    fallback works for every side, not just A."""
-    orch = _orch_with_nullduration_catalog(locked_pos="B3", locked_side="B")
-    flip, next_first = orch._compute_likely_flip(
-        orch.state, elapsed_since_audible_up_s=5.0,
-    )
-    assert flip is True
-    assert next_first["position"] == "C1"
-    assert next_first["side"] == "C"
-
-
-def test_likely_flip_false_at_end_of_record_with_null_durations():
-    """End of side D (the last side) → no next side → likely_flip False
-    even though depth fires."""
-    orch = _orch_with_nullduration_catalog(locked_pos="D3", locked_side="D")
-    flip, next_first = orch._compute_likely_flip(
-        orch.state, elapsed_since_audible_up_s=5.0,
-    )
-    assert flip is False
-    assert next_first is None
 
 
 def test_pending_guess_dropped_when_position_disagrees_with_payload():
