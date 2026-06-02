@@ -41,7 +41,7 @@ export function GuessConfirmCard({ guess }: Props) {
         border: '1px solid var(--sem-warn-edge)',
       }}
     >
-      <GuessDrainStrip />
+      <GuessDrainStrip durationMs={drainMs(guess)} />
       <div className="px-5 pt-4 pb-5">
         <span
           className="block font-mono text-[13px] uppercase tracking-[0.32em]"
@@ -62,13 +62,25 @@ export function GuessConfirmCard({ guess }: Props) {
   );
 }
 
-function GuessDrainStrip() {
+/**
+ * Drain duration for the card's countdown strip. Backend-owned lifetime
+ * (epic consolidate-guess-confidence-lifetime): drain over the guessed track's
+ * remaining seconds; fall back to the fixed window only when the backend can't
+ * supply a duration. Replaces the previously-hardcoded client 60s timer.
+ */
+function drainMs(guess: Guess): number {
+  return guess.expires_in_s != null
+    ? guess.expires_in_s * 1000
+    : MOTION.guessTimeoutMs;
+}
+
+function GuessDrainStrip({ durationMs }: { durationMs: number }) {
   return (
     <div
       className="h-[4px] origin-left"
       style={{
         backgroundColor: 'var(--dot-wait)',
-        animation: `guessConfirmDrain ${MOTION.guessTimeoutMs}ms linear forwards`,
+        animation: `guessConfirmDrain ${durationMs}ms linear forwards`,
       }}
     />
   );

@@ -24,6 +24,8 @@ interface Props {
   durationSeconds?: number | null;
   currentPosition: string | null | undefined;
   guessPosition: string | null | undefined;
+  /** Backend guess confidence — styles the guess ring (weaker as it decays). */
+  guessConfidence?: 'high' | 'medium' | 'low' | null;
   peek?: boolean;
   variant?: 'subtle';
   /**
@@ -35,9 +37,22 @@ interface Props {
   isCurrentAlbum?: boolean;
 }
 
+type GuessConfidence = 'high' | 'medium' | 'low' | null | undefined;
+
+// Guess ring styling by backend confidence (epic consolidate-guess-confidence-
+// lifetime): the amber circle visibly weakens as the lock's confidence decays —
+// solid+brighter at high, faint dashed at low. Undefined → medium (legacy look).
+const GUESS_RING: Record<'high' | 'medium' | 'low', { background: string; border: string }> = {
+  high: { background: 'rgba(242,194,102,0.12)', border: '1px solid var(--sem-warn-edge)' },
+  medium: { background: 'rgba(242,194,102,0.06)', border: '1px dashed var(--sem-warn-edge)' },
+  low: { background: 'rgba(242,194,102,0.03)', border: '1px dashed rgba(242,194,102,0.40)' },
+};
+
 // Persistent state layer — current pill (with shared-layout id so it
 // slides between rows on track change), guess dashed ring, or nothing.
-function PersistentLayer({ persistent }: { persistent: TapRowState }) {
+function PersistentLayer(
+  { persistent, guessConfidence }: { persistent: TapRowState; guessConfidence?: GuessConfidence },
+) {
   if (persistent === 'current') {
     return (
       <motion.div
@@ -55,10 +70,7 @@ function PersistentLayer({ persistent }: { persistent: TapRowState }) {
     return (
       <div
         className="absolute inset-0 -z-10 rounded-sm"
-        style={{
-          background: 'rgba(242,194,102,0.06)',
-          border: '1px dashed var(--sem-warn-edge)',
-        }}
+        style={GUESS_RING[guessConfidence ?? 'medium']}
       />
     );
   }
@@ -86,11 +98,11 @@ function FlashLayer() {
 }
 
 function RowOverlay({
-  persistent, flash,
-}: { persistent: TapRowState; flash: FlashState }) {
+  persistent, flash, guessConfidence,
+}: { persistent: TapRowState; flash: FlashState; guessConfidence?: GuessConfidence }) {
   return (
     <>
-      <PersistentLayer persistent={persistent} />
+      <PersistentLayer persistent={persistent} guessConfidence={guessConfidence} />
       {flash === 'just-tapped' && <FlashLayer />}
     </>
   );
@@ -187,6 +199,7 @@ export function TappableTrackRow({
   durationSeconds,
   currentPosition,
   guessPosition,
+  guessConfidence,
   peek = false,
   variant = 'subtle',
   isCurrentAlbum = true,
@@ -224,7 +237,7 @@ export function TappableTrackRow({
       data-testid={`tappable-row-${position}`}
       data-row-state={persistent}
     >
-      <RowOverlay persistent={persistent} flash={flash} />
+      <RowOverlay persistent={persistent} flash={flash} guessConfidence={guessConfidence} />
       <RowContent
         persistent={persistent}
         position={position}

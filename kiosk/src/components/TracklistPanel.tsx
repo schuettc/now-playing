@@ -14,6 +14,7 @@ interface RowArgs {
   releaseId: number | undefined;
   current: string | null | undefined;
   guessPos: string | null | undefined;
+  guessConfidence: 'high' | 'medium' | 'low' | null | undefined;
   peek: boolean;
 }
 
@@ -26,6 +27,7 @@ function TappableRow(p: RowArgs) {
       durationSeconds={p.track.duration_seconds}
       currentPosition={p.current ?? null}
       guessPosition={p.guessPos ?? null}
+      guessConfidence={p.guessConfidence ?? null}
       peek={p.peek}
     />
   );
@@ -183,6 +185,7 @@ function buildRowProps(
     releaseId: payload ? payload.release_id : undefined,
     current: effectiveCurrent,
     guessPos: payload?.guess ? payload.guess.position : undefined,
+    guessConfidence: payload?.guess ? payload.guess.confidence : undefined,
   } satisfies Omit<RowArgs, 'track' | 'peek'>;
 }
 

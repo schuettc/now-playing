@@ -105,7 +105,10 @@ function deriveWithoutPin(
   if (flags.shazam) return 'confirmed-shazam';
   if (flags.systemLocal) return 'confirmed-local';
   if (flags.anyConfirmed) return 'confirmed-local'; // user-identified/user-selected
-  if (payload.guess) return 'awaiting-confirm';
+  // The backend's `confirmable` flag (epic consolidate-guess-confidence-lifetime)
+  // decides whether this guess warrants a confirm prompt — the kiosk no longer
+  // re-derives it. Treat a missing flag as confirmable (legacy payloads).
+  if (payload.guess && payload.guess.confirmable !== false) return 'awaiting-confirm';
   // No recognition yet. If the identifying timer is still running, show
   // `identifying` instead of the loud `needs-id` failure state. After the
   // timeout elapses, fall through to `needs-id`.
