@@ -48,6 +48,19 @@ if TYPE_CHECKING:
 log = logging.getLogger("nowplaying.main")
 
 
+def _seed_track_duration(lv: dict, track_position: str) -> float | None:
+    """Duration (seconds) of the confirmed track, for the MBID seed drive.
+    Prefer the tracklist entry matching ``track_position``; fall back to a
+    payload-level duration. Returns None when neither is known."""
+    for tr in lv.get("tracklist") or []:
+        pos = tr.get("position") or tr.get("track_position")
+        if pos == track_position:
+            d = tr.get("duration_seconds")
+            return float(d) if d else None
+    d = lv.get("duration_seconds")
+    return float(d) if d else None
+
+
 def _cascade_match_dispatch(
     wav_bytes: bytes,
     locked_rid: int | None,
@@ -696,6 +709,47 @@ class HeartbeatHandlersMixin:
             top.release_id, top.track_position, top.hits, duration_s,
         )
 
+    def _resolve_mbid_seed(self) -> dict | None:
+        """Seed drive for the discovered fingerprint store.
+
+        Mirrors the user pin's role on the Discogs path: it lets the MBID
+        cascade write its first ref from a Shazam confirmation instead of
+        waiting for an anchor that can never form without an existing ref.
+        Returns the drive fields, or None when the current state can't be
+        seeded safely.
+
+        Declines unless last_vinyl is a genuinely off-Discogs release
+        (release_id is None) carrying an mbid + track_position, a Shazam
+        confirm timestamp is set, the matched track's duration is known,
+        and the confirm is recent enough that ``now - confirm`` still lands
+        inside the track — a stale confirm would tag the ref at a wrong
+        position and poison the store.
+        """
+        lv = self.state.last_vinyl
+        if not isinstance(lv, dict):
+            return None
+        if lv.get("release_id") is not None:
+            return None  # Discogs release — owned by the pin/anchor path
+        mbid = lv.get("release_mbid")
+        track_position = lv.get("track_position")
+        if not mbid or not track_position:
+            return None
+        ts = self.state.last_shazam_match_unix_ts
+        if not ts:
+            return None
+        duration_s = _seed_track_duration(lv, track_position)
+        if not duration_s:
+            return None  # can't place the ref without a track length
+        elapsed = time.time() - ts
+        if elapsed < 0 or elapsed > duration_s:
+            return None  # stale confirm — would mis-place the ref
+        return {
+            "mbid": mbid,
+            "track_position": track_position,
+            "duration_s": duration_s,
+            "elapsed": elapsed,
+        }
+
     async def _schedule_coverage_promotion(  # skylos: ignore SKY-Q301 SKY-C304 — Why: CC 11 / 88 lines come from two independent drive paths (pin vs anchor) each with early-return guards; splitting to sub-helpers would require threading 6+ local variables through call boundaries with no net clarity gain
         self, wav_bytes: bytes, level_db: float,
     ) -> None:
@@ -747,20 +801,38 @@ class HeartbeatHandlersMixin:
             drive = "pin"
         else:
             anchor = self.state.fingerprint_anchor
-            if anchor is None or _fingerprint_anchor_ttl_expired(anchor, now_mono):
-                return
-            last_pos = anchor.get("last_matched_ref_position_s")
-            if last_pos is None:
-                # Backward-compat against mid-deploy anchors written by
-                # the pre-this-feature build; silently skip rather than
-                # crash. Refreshed on the next strong fingerprint match.
-                return
-            release_id = anchor.get("release_id")
-            mbid = anchor.get("mbid")
-            track_position = anchor["track_position"]
-            duration_s = anchor.get("duration_seconds")
-            elapsed = float(last_pos) + (now_mono - anchor["monotonic_ts"])
-            drive = "anchor"
+            # An anchor is usable only if live AND carrying a matched ref
+            # position (old mid-deploy anchors lack it). When it isn't, fall
+            # through to the seed drive rather than bailing.
+            anchor_usable = (
+                anchor is not None
+                and not _fingerprint_anchor_ttl_expired(anchor, now_mono)
+                and anchor.get("last_matched_ref_position_s") is not None
+            )
+            if anchor_usable:
+                release_id = anchor.get("release_id")
+                mbid = anchor.get("mbid")
+                track_position = anchor["track_position"]
+                duration_s = anchor.get("duration_seconds")
+                last_pos = anchor["last_matched_ref_position_s"]
+                elapsed = float(last_pos) + (now_mono - anchor["monotonic_ts"])
+                drive = "anchor"
+            else:
+                # Seed drive: bootstrap the discovered fingerprint store from
+                # a recent Shazam confirmation, the way the user pin seeds the
+                # Discogs store. Without it the MBID cascade is a closed loop
+                # (an MBID anchor needs a discovered ref, which needs an MBID
+                # anchor), so it never gathers a first ref. See
+                # _resolve_mbid_seed for the guards.
+                seed = self._resolve_mbid_seed()
+                if seed is None:
+                    return
+                release_id = None
+                mbid = seed["mbid"]
+                track_position = seed["track_position"]
+                duration_s = seed["duration_s"]
+                elapsed = seed["elapsed"]
+                drive = "seed"
         if not track_position:
             return
         if release_id is None and mbid is None:
