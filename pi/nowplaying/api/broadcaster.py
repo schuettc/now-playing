@@ -131,7 +131,11 @@ class Broadcaster:
         async with self._lock:
             self._clients.discard(ws)
 
-    async def publish(self, payload: dict[str, Any]) -> None:
+    async def publish(self, payload: dict[str, Any]) -> bool:
+        """Broadcast the payload to all clients. Returns True if it was
+        published, False if suppressed as content-identical. Callers use
+        the verdict to decide whether the play is a new one or a
+        continuation (see history.record_play's extend_only)."""
         async with self._lock:
             prev = self._last
             redundant, reason = _payloads_are_redundant(prev, payload)
@@ -142,7 +146,7 @@ class Broadcaster:
                     payload.get("source"),
                     payload.get("title"),
                 )
-                return
+                return False
             # Why: snapshot the payload so later in-place mutations by callers
             # (e.g. pin_track mutates state.last_vinyl, which orchestrator
             # publishes by reference) don't retroactively change our notion
@@ -157,7 +161,7 @@ class Broadcaster:
             payload.get("release_id"),
         )
         if not clients:
-            return
+            return True
         msg = {"type": "now_playing", "payload": payload}
         dead: list[web.WebSocketResponse] = []
         for ws in clients:
@@ -174,6 +178,7 @@ class Broadcaster:
             async with self._lock:
                 for ws in dead:
                     self._clients.discard(ws)
+        return True
 
 
 async def ws_handler(request: web.Request) -> web.WebSocketResponse:

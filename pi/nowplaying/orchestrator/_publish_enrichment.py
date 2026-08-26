@@ -396,8 +396,10 @@ class PublishEnrichmentMixin:
 
         Polling Sonos is the documented mechanism for this and what
         Sonos's own apps do. Vinyl heartbeat audio recognition handles
-        the vinyl path. AirPlay-without-metadata also falls through to
-        the audio path. TV / radio push their own events.
+        the vinyl path. AirPlay that opens without Sonos metadata is
+        recovered by this loop — the heartbeat cascade is inert for
+        airplay (see on_heartbeat), so there is no audio path to fall
+        through to. TV / radio push their own events.
         """
         stop = self.stop
         sonos_coord = self.sonos_coord
@@ -416,13 +418,21 @@ class PublishEnrichmentMixin:
         """One iteration of the sonos repoll loop: gate on source/state,
         poll Sonos, and dispatch a synthetic event when the polled track
         differs from what's currently published (or unconditionally on
-        streaming so queue position advances).
+        streaming so queue position advances). Runs for airplay even when
+        no metadata has arrived yet — that is exactly the state this loop
+        exists to recover from.
         """
         state = self.state
         if state.sonos_source not in ("airplay", "streaming"):
             return
-        if not state.sonos_has_metadata:
-            return
+        # Deliberately NOT gated on state.sonos_has_metadata. That flag
+        # conflates "Sonos has no metadata for this source" (permanent,
+        # system-audio airplay) with "Sonos has not published metadata to
+        # us yet" (transient, the session-open DIDL race). Gating here on
+        # the first meaning starved the second: a session that opened with
+        # an empty DIDL could never recover, because this loop is the only
+        # periodic path that pulls the late metadata across. The no-title
+        # guard below makes the genuinely-metadata-less case a cheap no-op.
         try:
             polled = await poll_track(sonos_coord)
         except Exception as e:  # noqa: BLE001

@@ -132,16 +132,26 @@ _CONFIRMED_METHODS = (
 )
 
 
-def _within_coalesce_window(last: sqlite3.Row | None, now: int) -> bool:
+def _within_coalesce_window(
+    last: sqlite3.Row | None, now: int, extend_only: bool = False,
+) -> bool:
     """Clock-jump guard: if the system clock has moved backward (Pi has no
     RTC; NTP sync after long offline can jump), `now` may be less than the
     previous row's ended_at. Don't coalesce in that case — the resulting row
     would have ended_at < started_at.
+
+    ``extend_only`` drops the COALESCE_WINDOW_S upper bound (keeping the
+    clock-jump guard): the broadcaster has already ruled this publish
+    content-identical to what's on screen, so it is the same continuous
+    play no matter how long ago the last heartbeat was. The window only
+    existed to separate distinct plays; the broadcaster now does that job.
     """
     if last is None:
         return False
     last_end = int(last["ended_at"])
-    return now >= last_end and (now - last_end) <= COALESCE_WINDOW_S
+    if now < last_end:
+        return False
+    return extend_only or (now - last_end) <= COALESCE_WINDOW_S
 
 
 def _apply_coalesce_update(
@@ -242,10 +252,19 @@ def _insert_new_row(
     }
 
 
-def _write_play_row(payload: dict, title: str, now: int) -> dict:
+def _write_play_row(
+    payload: dict, title: str, now: int, extend_only: bool = False,
+) -> dict | None:
     """Open a connection, decide coalesce-vs-insert, and write the row.
-    Returns the row-info dict. Raises sqlite3.Error on DB failure — caller
-    handles logging."""
+    Returns the row-info dict, or None when ``extend_only`` had nothing to
+    extend. Raises sqlite3.Error on DB failure — caller handles logging.
+
+    ``extend_only`` marks a publish the broadcaster suppressed as
+    content-identical: extend the matching row past the coalesce window,
+    but NEVER insert — a suppressed publish is by definition not a new
+    play, so if it doesn't match the last row (stale-cache re-emit of an
+    already-ended track) it must write nothing.
+    """
     with _conn() as conn:
         last = conn.execute(
             "SELECT * FROM plays ORDER BY started_at DESC, id DESC LIMIT 1"
@@ -253,13 +272,15 @@ def _write_play_row(payload: dict, title: str, now: int) -> dict:
         if (
             last is not None
             and _row_matches(last, payload)
-            and _within_coalesce_window(last, now)
+            and _within_coalesce_window(last, now, extend_only)
         ):
             return _coalesce_existing_row(conn, last, payload, now)
+        if extend_only:
+            return None
         return _insert_new_row(conn, payload, title, now)
 
 
-def _record_play_sync(payload: dict) -> dict | None:
+def _record_play_sync(payload: dict, extend_only: bool = False) -> dict | None:
     """Synchronous body of record_play; intended to run via asyncio.to_thread.
 
     No-op when the payload has no title (idle / unmatched / pre-recognition)
@@ -277,25 +298,27 @@ def _record_play_sync(payload: dict) -> dict | None:
         return None
     now = int(time.time())
     try:
-        return _write_play_row(payload, title, now)
+        return _write_play_row(payload, title, now, extend_only)
     except sqlite3.Error as e:
         log.warning("record_play failed: %r", e)
         return None
 
 
-async def record_play(payload: dict) -> None:
+async def record_play(payload: dict, extend_only: bool = False) -> None:
     """Async wrapper — runs the SQLite write in a thread so the asyncio
     event loop is never blocked by disk I/O. Serialized via _write_lock
     so concurrent callers can't race the SELECT-then-INSERT/UPDATE.
 
-    On a successful write, fires a fire-and-forget Last.fm scrobble task
-    (no-op when env vars are unset)."""
+    ``extend_only`` (set when the broadcaster suppressed the publish as
+    content-identical) extends the current row without inserting; see
+    _write_play_row. On a successful write, fires a fire-and-forget
+    Last.fm scrobble task (no-op when env vars are unset)."""
     # Local import: scrobble module imports from db for log/constants in the
     # future, and this keeps the import graph one-directional at module load.
     from .scrobble import _safe_scrobble
 
     async with _write_lock:
-        row_info = await asyncio.to_thread(_record_play_sync, payload)
+        row_info = await asyncio.to_thread(_record_play_sync, payload, extend_only)
     if row_info is not None:
         duration = payload.get("duration_seconds")
         # Fire-and-forget; never block the caller.
