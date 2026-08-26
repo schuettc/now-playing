@@ -148,21 +148,41 @@ def _filter_recent_history(
 def _tracklist_payload(
     side_tracklist: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Normalize per-track dicts to `{position, title, duration_s}`.
-    Catalog key is `duration_seconds`; falls back to legacy keys for
-    test fixtures and future callers."""
-    return [
-        {
+    """Normalize per-track dicts to
+    ``{position, title, duration_s, start_s, end_s}``.
+
+    ``start_s``/``end_s`` are the track's cumulative window in seconds from
+    the side's start (in tracklist order), so the model can locate the
+    playing track by a window lookup instead of summing durations itself —
+    the summation it has historically gotten wrong (placing later tracks one
+    full track too early). ``end_s`` is None when a track's duration is
+    unknown (and the running total can't advance past it).
+
+    Catalog key is ``duration_seconds``; falls back to legacy keys for test
+    fixtures and future callers.
+    """
+    out: list[dict[str, Any]] = []
+    cum = 0.0
+    for t in side_tracklist:
+        dur = (
+            t.get("duration_seconds")
+            or t.get("duration_s")
+            or t.get("duration")
+        )
+        start_s = int(round(cum))
+        if dur:
+            cum += float(dur)
+            end_s: int | None = int(round(cum))
+        else:
+            end_s = None
+        out.append({
             "position": _str(t.get("track_position") or t.get("position")),
             "title": _str(t.get("title")),
-            "duration_s": (
-                t.get("duration_seconds")
-                or t.get("duration_s")
-                or t.get("duration")
-            ),
-        }
-        for t in side_tracklist
-    ]
+            "duration_s": dur,
+            "start_s": start_s,
+            "end_s": end_s,
+        })
+    return out
 
 
 def _locked_payload(locked_album_ctx: dict[str, Any]) -> dict[str, Any]:
@@ -190,6 +210,12 @@ _TRACK_GUESS_PROMPT_HEADER = (
     "will show your guess to the user as a confirmation prompt — not "
     "as ground truth. Pick the most likely position from the supplied "
     "tracklist.\n\n"
+    "Each track lists `start_s`/`end_s` — its cumulative window in seconds "
+    "from the side's start. An 'Estimated current position on the side' is "
+    "provided. The playing track is normally the one whose [start_s, end_s) "
+    "window contains that estimate — trust that lookup; do NOT re-derive it "
+    "by summing durations yourself. Use recent history only to override for "
+    "replays / skipped tracks, or to break a tie right at a track boundary.\n\n"
     "Confidence rules:\n"
     " - 'high': elapsed side time and recent history clearly point to "
     "one track. Do NOT set `alt`.\n"
@@ -210,6 +236,7 @@ def _build_track_guess_prompt(
     elapsed_since_audible_up_s: float,
     elapsed_since_last_confirm_s: float,
     predicted_position: str | None,
+    estimated_side_position_s: float | None = None,
     likely_flip: bool = False,
     next_side_first: dict[str, Any] | None = None,
 ) -> str:
@@ -250,6 +277,13 @@ def _build_track_guess_prompt(
         + f"Elapsed since last confirmed track (5s bucket): "
         + f"{bucketed_since_confirm} seconds\n"
         + f"Heuristic prediction (predicted_position): {json.dumps(predicted_position)}\n"
+        + (
+            "Estimated current position on the side (seconds from side "
+            "start, anchored to the confirmed track): "
+            f"{_bucket_elapsed(estimated_side_position_s)}\n"
+            if estimated_side_position_s is not None
+            else ""
+        )
         + f"Recent recognition history (excluding current track): "
         + f"{json.dumps(filtered_history, separators=(',', ':'))}\n"
         + flip_block

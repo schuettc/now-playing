@@ -218,6 +218,7 @@ class LLMAssist:
         elapsed_since_audible_up_s: float,
         elapsed_since_last_confirm_s: float,
         predicted_position: str | None,
+        estimated_side_position_s: float | None = None,
         likely_flip: bool = False,
         next_side_first: dict[str, Any] | None = None,
     ) -> Any:
@@ -253,6 +254,7 @@ class LLMAssist:
             elapsed_since_audible_up_s=elapsed_since_audible_up_s,
             elapsed_since_last_confirm_s=elapsed_since_last_confirm_s,
             predicted_position=predicted_position,
+            estimated_side_position_s=estimated_side_position_s,
             likely_flip=likely_flip,
             next_side_first=next_side_first,
         )
