@@ -26,40 +26,12 @@ If the user's request fits one of these, the skill content has the runbook — f
 
 ## Conventions
 
-- **Python virtualenv:** invoke binaries directly (`pi/.venv/bin/pytest`, `pi/.venv/bin/python`). Do not run `source venv/bin/activate`.
+- **The venv is at `pi/.venv/`**, not the repo root. Invoke its binaries directly.
 - **Testing:** `pi/.venv/bin/pytest pi/tests/` for backend; `cd kiosk && npm test` for frontend. Both must be green before merge.
 - **Linting / dead-code:** pre-commit hooks run `skylos` (dead code), `fallow` (complexity), `ruff` (style). Don't bypass with `--no-verify`. If a hook fires, fix the underlying issue or add a suppression with an inline rationale on the same line.
 - **Suppressions:** every `# skylos: ignore`, `# fallow-ignore`, `# noqa`, `# type: ignore` must carry an inline rationale explaining why the rule's *application* (not its finding) is wrong here. The canonical form is an em-dash suffix on the same line: `# skylos: ignore SKY-D216 — url built from hardcoded constant; host is not user-controlled`. The `# Why:` prefix form is also accepted. Neither form may be omitted.
 - **Commits:** never use `--no-verify`, never amend already-pushed commits, never add `Co-Authored-By` attribution.
 - **No journey documents.** This repo intentionally does not contain feature-history docs, design rationale narratives, or session logs. Code + tests + README + ARCHITECTURE + INSTALL are the artifacts. If you generate planning files while working, keep them under `.claude/` (already gitignored) — not committed.
-
-## What lives where
-
-```
-pi/
-  nowplaying/             # backend package
-    orchestrator/         # event loop + recognition cascade (mixin-composed)
-    sonos/                # SoCo wrappers, UPnP subscription handling
-    recognize/            # ShazamIO client, Discogs reverse-lookup
-    catalog/              # Discogs/discovered dispatcher (routes lookups by lock shape)
-    discovery/            # MusicBrainz lookup + discovered.sqlite + MBID-keyed fingerprint refs
-    api/                  # FastAPI routes, WebSocket broadcaster
-    capture/              # audio capture daemon (subprocess)
-  tests/                  # pytest suite (~600 tests)
-  scripts/                # one-off operational scripts
-  systemd/                # service unit files
-kiosk/
-  src/                    # React app
-  src/components/         # presentation
-  src/hooks/              # state derivation
-  tests/                  # vitest suite
-docs/
-  ARCHITECTURE.md         # system design reference
-  INSTALL.md              # first-time setup walkthrough
-.claude/
-  skills/                 # project-local skills (committed)
-  hooks/                  # project-local hooks (committed)
-```
 
 ## Hardware-in-the-loop reality
 
