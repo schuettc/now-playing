@@ -221,7 +221,9 @@ class PublishEnrichmentMixin:
         """If an AirPlay or streaming payload has artist + title but no
         release_id, try to find a matching release in the user's local
         Discogs collection. On hit, patch the payload with release_id,
-        side, track_position, and a canonical /art/<id> URL. We
+        side, and track_position — but never with art; the streaming
+        service's own cover art always wins (see
+        ``_apply_discogs_release_to_payload``). We
         intentionally do NOT attach the Discogs tracklist on streaming
         sources — the streaming service already provides a real queue
         via Sonos's Queue:1 service (see _enrich_with_queue below), so
@@ -263,8 +265,9 @@ class PublishEnrichmentMixin:
         self, payload: dict, rel: dict,
     ) -> dict:
         """Build an enriched payload from a Discogs release match: patch
-        release_id + album metadata, /art/<id> proxy URL, AirPlay-only
-        tracklist (streaming uses Sonos Queue:1 instead).
+        release_id + album metadata and the AirPlay-only tracklist
+        (streaming uses Sonos Queue:1 instead). Art is left alone unless
+        the payload arrived without any.
         """
         enriched = dict(payload)
         enriched["release_id"] = rel.get("id")
@@ -276,12 +279,13 @@ class PublishEnrichmentMixin:
         if matched_position:
             enriched["track_position"] = matched_position
             enriched["side"] = matched_position[:1] if matched_position else None
-        # Prefer the orchestrator's /art/<release_id> proxy over the
-        # AirPlay-supplied Sonos getaa URL — same canonical scans the
-        # vinyl path uses, served through the orchestrator's own art
-        # endpoint (which knows how to resolve Discogs scans vs.
-        # MusicBrainz Cover Art Archive vs. local overrides).
-        if rel.get("id") is not None:
+        # Do NOT overwrite the service-supplied art. On AirPlay and
+        # streaming, Sonos already told us exactly which track and which
+        # cover is playing; the Discogs match is a metadata convenience,
+        # and its vinyl scan is frequently a different pressing than what
+        # the service is streaming. Only fill art in when Sonos gave us
+        # none at all — empty art is worse than approximate art.
+        if not enriched.get("art_url") and rel.get("id") is not None:
             enriched["art_url"] = _art_url_for_release(int(rel["id"]))
         if payload.get("source") == "airplay":
             tracklist = self._tracklist_from_release(rel)
@@ -307,12 +311,16 @@ class PublishEnrichmentMixin:
         ]
 
     def _rewrite_art_url_for_overrides(self, payload: dict) -> dict:
-        """If a non-vinyl payload has artist+album but no Discogs match,
-        and an art override exists for that ``(artist, album)``, rewrite
-        ``art_url`` to ``/art-by-name`` so the override is served by the
-        kiosk. When no override exists, leave ``art_url`` untouched —
-        typically a perfectly good streaming-service URL routed through
-        the orchestrator's ``/art-cache/...`` proxy.
+        """If a non-vinyl payload has artist+album and an art override
+        exists for that ``(artist, album)``, rewrite ``art_url`` to
+        ``/art-by-name`` so the override is served by the kiosk. When no
+        override exists, leave ``art_url`` untouched — typically a
+        perfectly good streaming-service URL routed through the
+        orchestrator's ``/art-cache/...`` proxy.
+
+        Runs for matched streams too, not just unmatched ones: streaming
+        art no longer routes through ``/art/<rid>``, so this is now the
+        only place a deliberate user pick can beat the service's art.
 
         Override-conditional is the load-bearing UX choice. Unconditional
         rewriting would degrade Sonos's good art to a 404 every time the
@@ -321,8 +329,6 @@ class PublishEnrichmentMixin:
         """
         if payload.get("source") not in ("airplay", "streaming"):
             return payload
-        if payload.get("release_id") is not None:
-            return payload  # /art/<rid> already resolves overrides
         artist = (payload.get("artist") or "").strip()
         album = (payload.get("album") or "").strip()
         if not artist or not album:
