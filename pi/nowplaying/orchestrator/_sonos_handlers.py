@@ -80,8 +80,14 @@ class SonosHandlersMixin:
         if payload.get("source") in ("airplay", "streaming") and payload.get("title"):
             state.last_vinyl = payload
         self._maybe_arm_streaming_idle(payload)
-        await bcast.publish(self._anchor_and_publish(payload))
-        await history.record_play(payload)
+        # The broadcaster returns False when it suppressed the publish as
+        # content-identical. That verdict is proof this is the same
+        # continuous play, not a new one — so record it extend-only (extend
+        # ended_at, never insert). Without this, a duplicate airplay NOTIFY
+        # (~120 s cadence, past history's 60 s coalesce window) inserted a
+        # fresh row every time; see history.record_play.
+        published = await bcast.publish(self._anchor_and_publish(payload))
+        await history.record_play(payload, extend_only=not published)
 
     def _handle_sticky_idle(self, payload: dict) -> bool:
         """Evaluate sticky-idle short-circuit. Returns True if the event
