@@ -62,14 +62,16 @@ class SonosHandlersMixin:
         )
         # AirPlay / streaming enrichment: if the song happens to be on
         # a record in the user's Discogs collection, patch release_id +
-        # canonical art. AirPlay also gets the album tracklist; streaming
-        # skips it because it has a real Sonos queue (see below).
+        # album metadata. Art is NOT patched — the streaming service
+        # already knows exactly which cover is playing. AirPlay also gets
+        # the album tracklist; streaming skips it because it has a real
+        # Sonos queue (see below).
         payload = self._enrich_sonos_with_discogs(payload)
-        # Non-matched non-vinyl tracks: if an art override exists for
-        # this (artist, album), rewrite art_url to /art-by-name so the
+        # Non-vinyl tracks: if an art override exists for this
+        # (artist, album), rewrite art_url to /art-by-name so the
         # override is served. Lives OUTSIDE _enrich_sonos_with_discogs
         # because that function short-circuits when there's no Discogs
-        # match — the exact case this rewrite targets.
+        # match, and because a matched stream needs the rewrite too.
         payload = self._rewrite_art_url_for_overrides(payload)
         # Sonos-native streaming sources also get the upcoming queue
         # attached as `queue: [...]` for the kiosk's Up Next panel.
