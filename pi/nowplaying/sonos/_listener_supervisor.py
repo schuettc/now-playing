@@ -276,18 +276,12 @@ class _SonosListener:
         return cached
 
     def _build_enriched_payload(self, payload: dict, cached: dict) -> dict:
-        from nowplaying import artcache
-        from urllib.parse import quote as _urlquote
         enriched = dict(payload)
         enriched["title"] = cached["title"]
         enriched["artist"] = cached["artist"]
         enriched["album"] = cached["album"]
         original_art = self._resolve_art(cached.get("album_art"))
-        key = artcache.key_for(cached.get("artist"), cached.get("album"))
-        if key and original_art:
-            enriched["album_art"] = f"/art-cache/{key}?u={_urlquote(original_art, safe='')}"
-        else:
-            enriched["album_art"] = original_art
+        enriched["album_art"] = original_art
         enriched["didl_was_empty"] = False
         enriched["sonos_polled"] = True
         pos = cached.get("position_s")

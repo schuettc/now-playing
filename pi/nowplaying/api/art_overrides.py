@@ -47,8 +47,8 @@ async def _resolve_override_target(
 
 async def art_override_post_handler(request: web.Request) -> web.Response:
     """Save an art override. Dual-mode body:
-      - vinyl path:    {release_id, url, source}
-      - by-name path:  {artist, album, url, source}
+      - identified release (vinyl or streaming): {release_id, url, source}
+      - unidentified stream: {artist, album, url, source}
     When both are present, release_id wins. The response ``override_url``
     switches shape per path so the kiosk knows which URL to fetch on
     its next render.
@@ -68,6 +68,7 @@ async def art_override_post_handler(request: web.Request) -> web.Response:
     try:
         ov = await art_overrides.set(
             artist, album, parsed["url"], parsed["source"], session=session,
+            release_id=parsed["rid_raw"] if isinstance(parsed["rid_raw"], int) and parsed["rid_raw"] > 0 else None,
         )
     except art_overrides.OverrideError as e:
         return web.json_response(
@@ -92,8 +93,8 @@ async def art_override_delete_handler(request: web.Request) -> web.Response:
     rid_raw = request.query.get("release_id", "")
     artist_q = (request.query.get("artist") or "").strip()
     album_q = (request.query.get("album") or "").strip()
-    if rid_raw.isdigit():
-        rid = int(rid_raw)
+    rid = int(rid_raw) if rid_raw.isdigit() else None
+    if rid is not None:
         artist_album = await asyncio.to_thread(_catalog.rid_to_album, rid)
         if not artist_album:
             raise web.HTTPNotFound(reason="release not in local catalog")
@@ -102,5 +103,8 @@ async def art_override_delete_handler(request: web.Request) -> web.Response:
         artist, album = artist_q, album_q
     else:
         raise web.HTTPBadRequest(reason="release_id or artist+album required")
-    removed = await asyncio.to_thread(art_overrides.clear, artist, album)
+    removed = await asyncio.to_thread(
+        art_overrides.clear, artist, album,
+        release_id=rid,
+    )
     return web.json_response({"ok": True, "removed": removed})

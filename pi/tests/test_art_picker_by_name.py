@@ -115,6 +115,24 @@ async def test_fetch_candidates_no_rid_with_override_uses_art_by_name():
 
 
 @pytest.mark.asyncio
+async def test_matched_stream_current_candidate_uses_service_art(tmp_path, monkeypatch):
+    monkeypatch.setattr(art_overrides, "OVERRIDES_DIR", tmp_path)
+    monkeypatch.setattr(art_overrides, "INDEX_PATH", tmp_path / "index.json")
+    art_overrides._invalidate_index_cache()
+    try:
+        q = asyncio.Queue()
+        await art_picker._emit_current(
+            q, "American Football", "American Football", 9191767,
+            "/art-cache/lp2?u=service",
+        )
+        current = await q.get()
+        assert current["url"] == "/art-cache/lp2?u=service"
+        assert current["label"] == "Current (default)"
+    finally:
+        art_overrides._invalidate_index_cache()
+
+
+@pytest.mark.asyncio
 async def test_fetch_candidates_with_release_id_includes_discogs():
     """Regression: when `release_id` is set, Discogs sources still fire.
     Vinyl path must be unchanged."""

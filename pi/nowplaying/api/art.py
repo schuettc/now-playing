@@ -28,7 +28,7 @@ async def art_handler(request: web.Request) -> web.StreamResponse:
     artist_album = await asyncio.to_thread(_catalog.rid_to_album, rid)
     if artist_album:
         artist, album = artist_album
-        ov = await asyncio.to_thread(art_overrides.get, artist, album)
+        ov = await asyncio.to_thread(art_overrides.get, artist, album, release_id=rid)
         if ov is not None and ov.local_path:
             local = Path(ov.local_path)
             if local.exists():
@@ -49,7 +49,7 @@ async def art_handler(request: web.Request) -> web.StreamResponse:
             log.info(
                 "art_overrides: local file missing for key=%s, clearing", ov.key,
             )
-            await asyncio.to_thread(art_overrides.clear, artist, album)
+            await asyncio.to_thread(art_overrides.clear, artist, album, release_id=rid)
 
     cache_headers = {"Cache-Control": "public, max-age=86400"}
     candidate = MUSICBRAINZ_ART_DIR / f"{release_id}.jpg"

@@ -1,10 +1,10 @@
-"""On-disk cache for album art, keyed by sha1(artist|album).
+"""On-disk cache for album art, keyed by release ID or source art URL.
 
-Solves the flicker problem on AirPlay-through-Sonos: Sonos rotates a
-per-track `?u=...` parameter in its `getaa` URL even when consecutive
-tracks share the same album cover. By rewriting payload `art_url` to
-`/art-cache/<hash>?u=<original>` we give the kiosk a stable URL across
-the whole album, so the browser cache wins and the <img> never reloads.
+On identified AirPlay/Sonos albums, the release ID stabilizes the image
+across per-track `getaa` URLs. Unknown albums use the exact upstream URL:
+that can reload between tracks, but cannot return another self-titled
+album's cached bytes. Legacy artist+album cache entries are left on disk
+but never consulted by the service-art path.
 
 Each cached item is two files:
     pi/data/art/cache/<hash>.bin       — the raw image bytes
@@ -50,6 +50,24 @@ def key_for(artist: str | None, album: str | None) -> str | None:
         return None
     h = hashlib.sha1(f"{a}|{b}".encode("utf-8")).hexdigest()
     return h[:16]
+
+
+def key_for_art(
+    artist: str | None, album: str | None, upstream_url: str | None,
+    *, release_id: int | None = None,
+) -> str | None:
+    """Namespace service art by release, or by exact upstream URL if unknown.
+
+    Artist+album alone is not an album identity (eponymous releases can
+    share both). Unknown releases trade cross-track stability for correctness.
+    """
+    if release_id is not None and release_id > 0:
+        identity = f"release:{release_id}"
+    elif upstream_url:
+        identity = f"upstream:{upstream_url}"
+    else:
+        return None
+    return hashlib.sha1(identity.encode("utf-8")).hexdigest()[:16]
 
 
 def is_valid_key(key: str) -> bool:
