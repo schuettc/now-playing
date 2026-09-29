@@ -73,7 +73,7 @@ def _art_url_for_release(release_id: int) -> str:
     artist_album = discogs_catalog.rid_to_album(release_id)
     if artist_album:
         artist, album = artist_album
-        ov = art_overrides.get(artist, album)
+        ov = art_overrides.get(artist, album, release_id=release_id)
         if ov is not None:
             return f"/art/{release_id}?v={ov.picked_at_epoch}"
     return f"/art/{release_id}"
@@ -311,21 +311,11 @@ class PublishEnrichmentMixin:
         ]
 
     def _rewrite_art_url_for_overrides(self, payload: dict) -> dict:
-        """If a non-vinyl payload has artist+album and an art override
-        exists for that ``(artist, album)``, rewrite ``art_url`` to
-        ``/art-by-name`` so the override is served by the kiosk. When no
-        override exists, leave ``art_url`` untouched — typically a
-        perfectly good streaming-service URL routed through the
-        orchestrator's ``/art-cache/...`` proxy.
+        """Use a release-scoped pick when identified; name-only otherwise.
 
-        Runs for matched streams too, not just unmatched ones: streaming
-        art no longer routes through ``/art/<rid>``, so this is now the
-        only place a deliberate user pick can beat the service's art.
-
-        Override-conditional is the load-bearing UX choice. Unconditional
-        rewriting would degrade Sonos's good art to a 404 every time the
-        user hasn't picked one (no MusicBrainz fallback exists for
-        non-matched tracks; see ``art_by_name_handler``).
+        No pick means keep the service image. In particular, a legacy
+        name-only pick must never replace art for an identified release
+        with a sibling bearing the same artist and album title.
         """
         if payload.get("source") not in ("airplay", "streaming"):
             return payload
@@ -333,15 +323,16 @@ class PublishEnrichmentMixin:
         album = (payload.get("album") or "").strip()
         if not artist or not album:
             return payload
-        ov = art_overrides.get(artist, album)
+        rid = payload.get("release_id")
+        ov = art_overrides.get(artist, album, release_id=rid)
         if ov is None:
             return payload
         out = dict(payload)
-        # Include the override's epoch as a cache-bust so the browser
-        # fetches fresh after a pick instead of serving the stale
-        # cached image at the un-versioned URL.
-        params = {"artist": artist, "album": album, "v": str(ov.picked_at_epoch)}
-        out["art_url"] = f"/art-by-name?{urlencode(params)}"
+        if rid is not None:
+            out["art_url"] = f"/art/{rid}?v={ov.picked_at_epoch}"
+        else:
+            params = {"artist": artist, "album": album, "v": str(ov.picked_at_epoch)}
+            out["art_url"] = f"/art-by-name?{urlencode(params)}"
         return out
 
     async def _enrich_with_queue(self, payload: dict) -> dict:

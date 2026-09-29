@@ -119,6 +119,28 @@ def test_set_and_get_roundtrip(tmp_path):
     assert epoch > 0
 
 
+def test_release_picks_do_not_cross_self_titled_albums():
+    """A name-keyed LP4 pick cannot substitute for an LP2 release pick."""
+    session = _Session(_Resp())
+    _run(art_overrides.set(
+        "American Football", "American Football",
+        "https://i.discogs.com/lp4.jpg", "discogs-master", session=session,
+    ))
+    assert art_overrides.get("American Football", "American Football", release_id=9191767) is None
+    lp2 = _run(art_overrides.set(
+        "American Football", "American Football",
+        "https://i.discogs.com/lp2.jpg", "discogs-master",
+        session=session, release_id=9191767,
+    ))
+    assert art_overrides.get("American Football", "American Football", release_id=9191767).url.endswith("lp2.jpg")
+    assert art_overrides.get("American Football", "American Football", release_id=99999) is None
+    assert art_overrides.get("American Football", "American Football").url.endswith("lp4.jpg")
+    assert art_overrides.clear("American Football", "American Football", release_id=9191767)
+    assert art_overrides.get("American Football", "American Football", release_id=9191767) is None
+    assert Path(lp2.local_path).exists() is False
+    assert art_overrides.get("American Football", "American Football") is not None
+
+
 def test_set_rejects_truncated_response():
     # Upstream declared a larger Content-Length than it actually delivered —
     # this is the CDN-abort case that has caused 4-9 KB JPEG files on the

@@ -30,7 +30,7 @@ def _isolate(monkeypatch):
     # Stub out art_overrides.get so we don't hit a real index file.
     monkeypatch.setattr(
         art_picker.art_overrides, "get",
-        lambda artist, album: None,
+        lambda artist, album, *, release_id=None: None,
     )
     # Stub out the CAA URL-existence HEAD probe. Real picker behavior
     # filters out MBIDs without uploaded art; in unit tests we assume

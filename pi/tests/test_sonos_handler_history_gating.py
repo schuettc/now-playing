@@ -53,6 +53,25 @@ def _event(title="Crooked Teeth"):
     }
 
 
+def test_sonos_publish_rekeys_service_art_after_release_match():
+    """An identified LP2 and LP4 cannot share an artist+album proxy image."""
+    o = _make_orch()
+    o._enrich_sonos_with_discogs = lambda p: {**p, "release_id": 9191767 if p["title"] == "LP2 song" else 99999}
+    lp2 = {**_event(title="LP2 song"), "artist": "American Football",
+           "album": "American Football", "album_art": "http://sonos:1400/getaa?u=lp2"}
+    lp4 = {**lp2, "title": "LP4 song", "album_art": "http://sonos:1400/getaa?u=lp4"}
+    with mock.patch("nowplaying.history.record_play", new=mock.AsyncMock()):
+        _run(o.on_sonos_event(lp2))
+        first = o.bcast._last["art_url"]
+        _run(o.on_sonos_event(lp4))
+        second = o.bcast._last["art_url"]
+    assert first.startswith("/art-cache/")
+    assert second.startswith("/art-cache/")
+    assert first.split("?")[0] != second.split("?")[0]
+    assert "u=http%3A%2F%2Fsonos%3A1400%2Fgetaa%3Fu%3Dlp2" in first
+    assert "u=http%3A%2F%2Fsonos%3A1400%2Fgetaa%3Fu%3Dlp4" in second
+
+
 def test_suppressed_publish_records_extend_only():
     o = _make_orch()
     with mock.patch(

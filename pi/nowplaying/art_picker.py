@@ -51,19 +51,13 @@ def _current_url(
     *,
     has_override: bool,
 ) -> str:
-    """URL to fetch the currently-served art. Resolution order:
-      1. /art/<rid>?v=current          when release_id is set (vinyl)
-      2. /art-by-name?artist=…&album=… when an override exists for
-                                       this (artist, album)
-      3. fallback_url                  the kiosk's current art_url —
-                                       typically Sonos's streaming-service
-                                       art proxied through /art-cache/...
-                                       Without this, the "Current" tile
-                                       would 404 for any streaming track
-                                       without a saved override.
+    """URL for the currently displayed art: release or name pick if set,
+    otherwise the supplied service URL (or /art/<rid> for vinyl).
     """
-    if release_id is not None:
+    if release_id is not None and has_override:
         return f"/art/{release_id}?v=current"
+    if release_id is not None:
+        return fallback_url or f"/art/{release_id}?v=current"
     if has_override:
         return f"/art-by-name?{urlencode({'artist': artist, 'album': album})}&v=current"
     return fallback_url or ""
@@ -83,7 +77,7 @@ async def _emit_current(
     For the by-name path, ``current_url`` is the kiosk's currently
     rendered ``art_url`` — typically Sonos's streaming-service art —
     used as the displayable URL when no override has been saved yet."""
-    ov = art_overrides.get(artist, album)
+    ov = art_overrides.get(artist, album, release_id=release_id)
     label = "Current (user pick)" if ov else "Current (default)"
     url = _current_url(
         artist, album, release_id, current_url, has_override=ov is not None,

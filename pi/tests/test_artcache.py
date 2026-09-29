@@ -39,6 +39,16 @@ def test_key_for_returns_none_on_missing_fields():
     assert artcache.key_for("", "") is None
 
 
+def test_service_art_key_separates_self_titled_releases_and_upstreams():
+    lp2 = artcache.key_for_art("American Football", "American Football", "http://sonos/getaa?u=lp2", release_id=9191767)
+    lp2_next_track = artcache.key_for_art("American Football", "American Football", "http://sonos/getaa?u=other-lp2-track", release_id=9191767)
+    lp4 = artcache.key_for_art("American Football", "American Football", "http://sonos/getaa?u=lp4", release_id=99999)
+    unknown_lp4 = artcache.key_for_art("American Football", "American Football", "http://sonos/getaa?u=lp4")
+    unknown_lp2 = artcache.key_for_art("American Football", "American Football", "http://sonos/getaa?u=lp2")
+    assert lp2 == lp2_next_track
+    assert len({lp2, lp4, unknown_lp4, unknown_lp2, artcache.key_for("American Football", "American Football")}) == 5
+
+
 def test_is_valid_key_format():
     assert artcache.is_valid_key("0123456789abcdef")
     assert not artcache.is_valid_key("0123456789abcde")     # too short

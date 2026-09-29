@@ -216,6 +216,73 @@ def test_art_override_post_by_name_returns_by_name_url():
     assert "&v=" in body["override_url"]
 
 
+def test_release_override_api_is_scoped_to_release(tmp_path):
+    """A release pick is served only by /art/<rid>, not the name route."""
+    from nowplaying import art_cache
+    from nowplaying import art_overrides as store
+    from nowplaying.discogs import catalog
+
+    art_path = tmp_path / "lp2.jpg"
+    art_path.write_bytes(b"lp2")
+    key = store._target_key("American Football", "American Football", 9191767)
+    (tmp_path / "index.json").write_text(json.dumps({key: {
+        "url": "https://example/lp2.jpg", "source": "caa",
+        "picked_at": "2026-05-14T20:00:00Z", "picked_at_epoch": 1747252800,
+        "local_path": str(art_path), "content_type": "image/jpeg",
+    }}))
+    store._invalidate_index_cache()
+
+    async def go():
+        app = _make_app()
+        app.router.add_get("/art/{release_id}", api.art_handler)
+        with patch.object(catalog, "rid_to_album", return_value=("American Football", "American Football")), \
+             patch.object(art_cache, "_mb_inflight", {9191767, 99999}):
+            async with TestClient(TestServer(app)) as client:
+                own = await client.get("/art/9191767")
+                own_body = await own.read()
+                other = await client.get("/art/99999")
+                name = await client.get("/art-by-name?artist=American+Football&album=American+Football")
+                deleted = await client.delete("/api/art-override?release_id=9191767")
+                return own.status, own_body, other.status, name.status, await deleted.json()
+
+    status, body, other, name, deleted = _run(go())
+    assert (status, body, other, name) == (200, b"lp2", 404, 404)
+    assert deleted["removed"] is True
+    assert store.get("American Football", "American Football", release_id=9191767) is None
+
+
+def test_release_post_persists_to_release_not_name(tmp_path):
+    """The HTTP release_id must reach storage, not just shape the response URL."""
+    from nowplaying import art_cache
+    from nowplaying.discogs import catalog
+
+    async def fetched(url, *, session):
+        return b"\xff\xd8" + b"x" * 8192, "image/jpeg"
+
+    async def go():
+        app = _make_app()
+        app.router.add_get("/art/{release_id}", api.art_handler)
+        with patch.object(catalog, "rid_to_album", return_value=("American Football", "American Football")), \
+             patch.object(art_overrides, "_fetch_with_retry", fetched), \
+             patch.object(art_cache, "_mb_inflight", {9191767}):
+            async with TestClient(TestServer(app)) as client:
+                saved = await client.post("/api/art-override", json={
+                    "release_id": 9191767, "url": "https://i.discogs.com/lp2.jpg", "source": "discogs-master",
+                })
+                saved_body = await saved.json()
+                served = await client.get("/art/9191767")
+                image = await served.read()
+                by_name = await client.get("/art-by-name?artist=American+Football&album=American+Football")
+                return saved.status, saved_body, served.status, image, by_name.status
+
+    status, saved, served, image, by_name = _run(go())
+    assert (status, served, by_name) == (200, 200, 404)
+    assert saved["override_url"].startswith("/art/9191767?")
+    assert image.startswith(b"\xff\xd8")
+    assert art_overrides.get("American Football", "American Football", release_id=9191767) is not None
+    assert art_overrides.get("American Football", "American Football") is None
+
+
 def test_art_override_post_400_when_no_identity():
     async def go():
         async with TestClient(TestServer(_make_app())) as client:
@@ -295,7 +362,7 @@ def test_art_handler_schedules_background_task_on_404(monkeypatch, tmp_path):
     monkeypatch.setattr(_catalog, "rid_to_album", lambda rid: ("Best Coast", "California Nights"))
 
     # Patch art_overrides.get → None (no override)
-    monkeypatch.setattr("nowplaying.art_overrides.get", lambda a, b: None)
+    monkeypatch.setattr("nowplaying.art_overrides.get", lambda a, b, *, release_id=None: None)
 
     # Track asyncio.create_task calls
     tasks_scheduled = []
@@ -335,7 +402,7 @@ def test_art_handler_no_task_when_rid_to_album_returns_none(monkeypatch, tmp_pat
     monkeypatch.setattr(_paths, "MUSICBRAINZ_ART_DIR", tmp_path)
     from nowplaying.discogs import catalog as _catalog
     monkeypatch.setattr(_catalog, "rid_to_album", lambda rid: None)
-    monkeypatch.setattr("nowplaying.art_overrides.get", lambda a, b: None)
+    monkeypatch.setattr("nowplaying.art_overrides.get", lambda a, b, *, release_id=None: None)
 
     tasks_scheduled = []
 
@@ -363,7 +430,7 @@ def test_art_handler_dedup_skips_second_task_for_same_rid(monkeypatch, tmp_path)
     monkeypatch.setattr(_paths, "MUSICBRAINZ_ART_DIR", tmp_path)
     from nowplaying.discogs import catalog as _catalog
     monkeypatch.setattr(_catalog, "rid_to_album", lambda rid: ("Artist", "Album"))
-    monkeypatch.setattr("nowplaying.art_overrides.get", lambda a, b: None)
+    monkeypatch.setattr("nowplaying.art_overrides.get", lambda a, b, *, release_id=None: None)
 
     tasks_scheduled = []
 

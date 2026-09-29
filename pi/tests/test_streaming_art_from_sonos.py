@@ -65,6 +65,31 @@ def _override(epoch: int = 1779478774) -> Override:
     )
 
 
+def test_sonos_art_uses_distinct_release_cache_after_metadata_match() -> None:
+    from nowplaying.orchestrator.payload import service_art_url, sonos_to_payload
+
+    ev = {"ts": "2026-09-29T12:00:00Z", "source": "airplay",
+          "artist": "American Football", "album": "American Football",
+          "album_art": "http://sonos:1400/getaa?u=lp2"}
+    before = sonos_to_payload(ev)["art_url"]
+    lp2 = service_art_url(ev, release_id=9191767)
+    lp2_next = service_art_url({**ev, "album_art": "http://sonos:1400/getaa?u=lp2-next"}, release_id=9191767)
+    lp4 = service_art_url({**ev, "album_art": "http://sonos:1400/getaa?u=lp4"}, release_id=99999)
+    assert before != lp2
+    assert lp2.split("?")[0] == lp2_next.split("?")[0]
+    assert lp2.split("?")[0] != lp4.split("?")[0]
+    assert "u=http%3A%2F%2Fsonos%3A1400%2Fgetaa%3Fu%3Dlp2" in lp2
+
+
+def test_legacy_proxied_sonos_url_is_unwrapped_before_release_rekey() -> None:
+    from nowplaying.orchestrator.payload import service_art_url
+
+    ev = {"artist": "American Football", "album": "American Football",
+          "album_art": "/art-cache/oldnamekey?u=http%3A%2F%2Fsonos%3A1400%2Fgetaa%3Fu%3Dlp2"}
+    raw = {**ev, "album_art": "http://sonos:1400/getaa?u=lp2"}
+    assert service_art_url(ev, release_id=9191767) == service_art_url(raw, release_id=9191767)
+
+
 def test_discogs_match_keeps_the_sonos_art() -> None:
     out = _Enricher()._apply_discogs_release_to_payload(_payload(), RELEASE)
     assert out["art_url"] == SONOS_ART
@@ -92,21 +117,31 @@ def test_falls_back_to_release_art_when_sonos_supplied_none() -> None:
     assert out["art_url"] == "/art/3112846"
 
 
+def test_matched_stream_ignores_old_name_pick_and_uses_release_pick() -> None:
+    """LP2 must not inherit a name-only pick made for another self-titled LP."""
+    matched = _payload(
+        artist="American Football", album="American Football",
+        release_id=9191767, art_url=SONOS_ART,
+    )
+    with patch(
+        "nowplaying.orchestrator._publish_enrichment.art_overrides.get",
+        side_effect=lambda artist, album, *, release_id=None: (
+            _override() if release_id is None else None
+        ),
+    ):
+        out = _Enricher()._rewrite_art_url_for_overrides(matched)
+    assert out["art_url"] == SONOS_ART
+
+
 def test_user_override_wins_over_sonos_art_on_a_matched_stream() -> None:
-    """The override rewrite used to skip any payload carrying a
-    release_id, on the assumption that /art/<rid> resolved overrides
-    itself. Streaming art no longer routes through /art/<rid>, so the
-    rewrite has to run for matched streams too or a deliberate pick is
-    silently ignored."""
+    """A deliberate pick for the matched release beats its service image."""
     matched = _payload(release_id=3112846, art_url=SONOS_ART)
     with patch(
         "nowplaying.orchestrator._publish_enrichment.art_overrides.get",
         return_value=_override(),
     ):
         out = _Enricher()._rewrite_art_url_for_overrides(matched)
-    assert out["art_url"] == (
-        "/art-by-name?artist=Death+Cab+for+Cutie&album=Plans&v=1779478774"
-    )
+    assert out["art_url"] == "/art/3112846?v=1779478774"
 
 
 def test_vinyl_payload_art_is_untouched_by_the_override_rewrite() -> None:

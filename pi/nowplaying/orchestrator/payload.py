@@ -1,6 +1,7 @@
 """Sonos-event → kiosk-payload translation helpers."""
 from __future__ import annotations
 
+from urllib.parse import parse_qs, urlsplit
 from urllib.parse import quote as _urlquote
 
 
@@ -18,18 +19,27 @@ SOURCE_MAP = {
 }
 
 
-def _cached_art_url(ev: dict) -> str | None:
-    """Route DIDL-populated art through the orchestrator's art-cache proxy
-    so same-album tracks share a URL. Listener-enriched payloads already
-    had this applied; this re-applies for synthetic / repoll events.
+def service_art_url(ev: dict, *, release_id: int | None = None) -> str | None:
+    """Proxy Sonos art under a release key, or the exact source URL when unknown.
+
+    Polled events may already carry the listener's provisional proxy URL;
+    extract its original `u` before assigning the final release identity.
     """
     from nowplaying import artcache
 
     art_url = ev.get("album_art")
-    key = artcache.key_for(ev.get("artist"), ev.get("album"))
-    if key and art_url and not art_url.startswith("/art-cache/"):
-        art_url = f"/art-cache/{key}?u={_urlquote(art_url, safe='')}"
-    return art_url
+    if not art_url:
+        return None
+    if art_url.startswith("/art-cache/"):
+        art_url = parse_qs(urlsplit(art_url).query).get("u", [None])[0]
+    if not art_url:
+        return None
+    key = artcache.key_for_art(ev.get("artist"), ev.get("album"), art_url, release_id=release_id)
+    return f"/art-cache/{key}?u={_urlquote(art_url, safe='')}" if key else art_url
+
+
+def _cached_art_url(ev: dict) -> str | None:
+    return service_art_url(ev)
 
 
 def _apply_sonos_anchor(payload: dict, ev: dict) -> None:
@@ -53,7 +63,7 @@ def sonos_to_payload(ev: dict) -> dict:
         "title": ev.get("title"),
         "artist": ev.get("artist"),
         "album": ev.get("album"),
-        "art_url": _cached_art_url(ev),
+        "art_url": service_art_url(ev),
         "match_method": "sonos-polled" if ev.get("sonos_polled") else "sonos-didl",
     }
     _apply_sonos_anchor(payload, ev)

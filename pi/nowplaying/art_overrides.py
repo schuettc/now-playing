@@ -1,13 +1,10 @@
-"""Per-album user-chosen art overrides.
+"""User-chosen art overrides, scoped by release ID when one is known.
 
-JSON index at ``pi/data/art/overrides/index.json`` keyed by
-``artcache.key_for(artist, album)`` plus a local image cache at
-``pi/data/art/overrides/<key>.<ext>``. The on-disk file insulates the
-play-time ``/art/<id>`` path from the original CDN — once the user picks,
-we never touch Discogs again at play time.
-
-Key shape uses ``artcache.key_for`` so the existing case-/whitespace-
-normalization is the single source of truth across art-related modules.
+The JSON index and local image files live in ``pi/data/art/overrides``.
+Release-scoped keys never fall back to legacy artist+album keys: those
+could be picks for another same-named album. Name keys remain available
+for tracks with no release ID. The on-disk image avoids CDN requests at
+play time.
 
 ``set()`` validates ``url`` through ``net_allowlist.is_allowed_upstream``
 and the response Content-Type before persisting anything. Partial writes
@@ -215,8 +212,14 @@ def _ext_from_content_type(ctype: str) -> str:
     return "jpg"
 
 
-def get(artist: str, album: str) -> Optional[Override]:
-    key = key_for(artist, album)
+def _target_key(artist: str, album: str, release_id: int | None) -> str | None:
+    if release_id is not None:
+        return artcache.key_for_art(artist, album, None, release_id=release_id)
+    return key_for(artist, album)
+
+
+def get(artist: str, album: str, *, release_id: int | None = None) -> Optional[Override]:
+    key = _target_key(artist, album, release_id)
     if not key:
         return None
     rec = _load_index().get(key)
@@ -468,17 +471,18 @@ async def set(
     source: str,
     *,
     session: aiohttp.ClientSession,
+    release_id: int | None = None,
 ) -> Override:
     """Fetch ``url``, persist the bytes, write the index entry. Atomic:
     either everything lands or nothing does.
 
-    Raises ``OverrideError`` on missing artist/album (400), allowlist
+    Raises ``OverrideError`` on missing identity (400), allowlist
     rejection (400), non-2xx/timeout/network/non-image/empty/oversized/
     truncated response (502), or local write failure (500).
     """
-    key = key_for(artist, album)
+    key = _target_key(artist, album, release_id)
     if not key:
-        raise OverrideError("artist and album are required", status=400)
+        raise OverrideError("valid release_id or artist and album required", status=400)
     if not is_allowed_upstream(url):
         raise OverrideError(
             "url host is not in the allowlist", status=400,
@@ -511,7 +515,7 @@ async def set(
     )
 
 
-def clear(artist: str, album: str) -> bool:
+def clear(artist: str, album: str, *, release_id: int | None = None) -> bool:
     """Remove the override and its cached file. Returns True if anything
     was actually removed.
 
@@ -520,7 +524,7 @@ def clear(artist: str, album: str) -> bool:
     so a concurrent ``set()`` (also under the lock inside ``to_thread``)
     cannot interleave a read-modify-write.
     """
-    key = key_for(artist, album)
+    key = _target_key(artist, album, release_id)
     if not key:
         return False
     with _index_lock:
@@ -556,7 +560,7 @@ def clear(artist: str, album: str) -> bool:
         return rec is not None or removed_file
 
 
-def read_bytes(artist: str, album: str) -> Optional[tuple[bytes, str, int]]:
+def read_bytes(artist: str, album: str, *, release_id: int | None = None) -> Optional[tuple[bytes, str, int]]:
     """Return (bytes, content_type, picked_at_epoch) when an override is
     present AND its local file exists. Returns None when the override is
     missing OR the local file vanished (caller should ``clear`` and fall
@@ -566,7 +570,7 @@ def read_bytes(artist: str, album: str) -> Optional[tuple[bytes, str, int]]:
     ``asyncio.to_thread`` so the event loop never blocks on the JSON
     index read or the image read.
     """
-    ov = get(artist, album)
+    ov = get(artist, album, release_id=release_id)
     if not ov or not ov.local_path:
         return None
     p = Path(ov.local_path)
