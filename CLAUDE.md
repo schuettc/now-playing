@@ -31,6 +31,8 @@ If the user's request fits one of these, the skill content has the runbook — f
 - **Linting / dead-code:** pre-commit hooks run `skylos` (dead code), `fallow` (complexity), `ruff` (style). Don't bypass with `--no-verify`. If a hook fires, fix the underlying issue or add a suppression with an inline rationale on the same line.
 - **Suppressions:** every `# skylos: ignore`, `# fallow-ignore`, `# noqa`, `# type: ignore` must carry an inline rationale explaining why the rule's *application* (not its finding) is wrong here. The canonical form is an em-dash suffix on the same line: `# skylos: ignore SKY-D216 — url built from hardcoded constant; host is not user-controlled`. The `# Why:` prefix form is also accepted. Neither form may be omitted.
 - **Commits:** never use `--no-verify`, never amend already-pushed commits, never add `Co-Authored-By` attribution.
+- **No per-user developer keys.** This is a public repo: features must work without anyone registering for an API key. Prefer free, keyless sources (MusicBrainz by ISRC, Shazam's own fields). MusicBrainz calls go through the 1 req/s semaphore in `pi/nowplaying/art_cache.py`.
+- **FHD preview on a Mac:** `kiosk/scripts/preview-fhd.sh [url]` opens a chrome-less 1920×1080 window matching the kiosk display. It defaults to the Pi; pass `http://localhost:5173` for the Vite dev server.
 - **No journey documents.** This repo intentionally does not contain feature-history docs, design rationale narratives, or session logs. Code + tests + README + ARCHITECTURE + INSTALL are the artifacts. If you generate planning files while working, keep them under `.claude/` (already gitignored) — not committed.
 
 ## Hardware-in-the-loop reality
@@ -38,6 +40,22 @@ If the user's request fits one of these, the skill content has the runbook — f
 The orchestrator's correctness depends on real audio flowing through a real USB capture device with real Shazam rate limits and a real Sonos UPnP subscription. Unit tests cover code correctness; only live deployment to a Pi covers feature correctness. When the user reports a bug that involves the recognition cascade timing, idle clock, or Sonos events, expect the verification step to involve SSH'ing to the Pi and watching `journalctl -u nowplaying-orchestrator -f`.
 
 The `nowplaying-troubleshoot` and `nowplaying-diagnose` skills cover the operational side of this.
+
+Before a live verify, prove every screen the user will look at runs the new bundle. Restarting `nowplaying-kiosk` only refreshes the Pi's Chromium; any other browser needs a hard refresh. Pick a sentinel string unique to the new bundle and confirm it's on screen first. If the new behaviour is missing, suspect a stale bundle before suspecting the code.
+
+## Deploying to the Pi
+
+The Pi has no Node, so build the kiosk on the Mac (`cd kiosk && npm run build`), then `rsync -az --delete kiosk/dist/ nowplaying-pi:~/now-playing/kiosk/dist/` and `sudo systemctl restart nowplaying-kiosk` on the Pi. The orchestrator serves `dist` off disk, so a bundle swap needs no orchestrator restart.
+
+After any `git reset` or checkout on the Pi, re-rsync `dist`: `index.html` is untracked and gets deleted.
+
+While diagnosing, iterate on the Pi and commit only after a live verify.
+
+## Kiosk UI
+
+The kiosk is a wall-mounted touchscreen. Primary actions are visible, labelled controls at least 44px on the short axis. Keep everyday corrections out of the three-dot admin overlay, and improve an existing dedicated surface (`/identify`) rather than folding it into another component.
+
+Don't call `scrollIntoView` inside kiosk subcomponents; it can scroll ancestors and the viewport. Scroll the container with `container.scrollTo({ top })`. jsdom can't catch this, so check it live.
 
 ## What to avoid
 
