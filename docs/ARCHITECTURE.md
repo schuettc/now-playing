@@ -87,7 +87,7 @@ idle timer, and shazam-only cross-heartbeat agreement.
 | `sonos_source` | Current Sonos source ("vinyl" / "airplay" / "streaming" / "radio" / "tv" / "unknown"). Gates capture state handlers. |
 | `sonos_state` | "PLAYING" / "PAUSED" / "STOPPED". |
 | `last_vinyl` | Last confirmed recognition payload. The "album lock." Survives Sonos volume events that publish empty metadata. |
-| `idle_task` | `asyncio.Task` for the 45s post-silence idle timer. Cancelled on any music-level heartbeat or audible. |
+| `idle_task` | `asyncio.Task` for the 120s post-silence idle timer (`VINYL_IDLE_DELAY_S`). Cancelled on any music-level heartbeat or audible. |
 | `pending_shazam_only` | Recent Shazam hits without a Discogs match. Cross-heartbeat agreement gate (MIN_AGREEMENTS=2, PENDING_WINDOW_S=120s) before publishing. |
 | `sonos_has_metadata` | True if Sonos zone returned DIDL metadata. Distinguishes vinyl-with-metadata-from-AirPlay-renaming vs vinyl-direct. |
 | `capture_emit_paused` | True after SIGHUP. Capture stream runs but clips aren't written. |
@@ -144,7 +144,7 @@ streak threshold trips, the song has actually been playing ~30s.
 
 | Event | Behaviour |
 |---|---|
-| `silent` | Clear `predicted_position`. Arm idle timer (45s) unless one's already running. |
+| `silent` | Clear `predicted_position`. Arm idle timer (120s) unless one's already running. |
 | `audible` (album-locked) | Cancel in-flight idle. Try to advance prediction (`_try_advance_prediction`). Publish predicted track. |
 | `audible` (no lock) | Cancel idle. Publish VinylIdentifying spinner. Reset `unmatched_streak = 0`. |
 
@@ -170,8 +170,9 @@ Shazam-only hits (`release_id is None`) are honored unconditionally — that's e
 
 ### Idle timer — `main.py:550`
 
-45-second `asyncio.sleep`, cancellable. On fire: clear `last_vinyl`,
-`predicted_position`, `pending_shazam_only`, publish `STOPPED`.
+120-second `asyncio.sleep` (`VINYL_IDLE_DELAY_S` in `orchestrator/streaming_idle.py`), cancellable. On fire: clear `last_vinyl`, `predicted_position`, `pending_shazam_only`, publish `STOPPED`.
+
+After a restart with the needle up, the kiosk shows "identifying" until 120s of silence have passed, because Sonos line-in always reports PLAYING.
 
 ## Discogs disambiguation — `pi/nowplaying/discogs/catalog.py`
 
