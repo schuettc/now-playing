@@ -170,8 +170,7 @@ Shazam-only hits (`release_id is None`) are honored unconditionally — that's e
 
 ### Idle timer — `main.py:550`
 
-120-second `asyncio.sleep` (`VINYL_IDLE_DELAY_S` in `orchestrator/streaming_idle.py`), cancellable. On fire: clear `last_vinyl`,
-`predicted_position`, `pending_shazam_only`, publish `STOPPED`.
+120-second `asyncio.sleep` (`VINYL_IDLE_DELAY_S` in `orchestrator/streaming_idle.py`), cancellable. On fire: clear `last_vinyl`, `predicted_position`, `pending_shazam_only`, publish `STOPPED`.
 
 After a restart with the needle up, the kiosk shows "identifying" until 120s of silence have passed, because Sonos line-in always reports PLAYING.
 
