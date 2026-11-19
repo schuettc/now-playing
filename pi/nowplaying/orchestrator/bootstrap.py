@@ -121,8 +121,8 @@ async def main_async() -> None:
     listener_task = asyncio.create_task(run_listener(zone, orch.on_sonos_event, stop))
     sonos_repoll_task = asyncio.create_task(orch.sonos_repoll_loop())
     # Start capture with the right emit state for the initial Sonos source.
-    # emit_initial_state above has already populated state.sonos_source +
-    # state.sonos_has_metadata, so we know whether to start paused without
+    # emit_initial_state above has already populated state.sonos_source,
+    # so we know whether to start paused without
     # needing to signal post-startup (avoids the race where signal_capture
     # fires before _capture_pid is registered).
     initial_should_pause = _should_pause_capture(state)

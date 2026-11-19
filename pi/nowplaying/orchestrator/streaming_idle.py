@@ -201,17 +201,10 @@ def _evaluate_sticky_idle(
 
 
 def _should_pause_capture(state: "State") -> bool:
-    """The orchestrator's view of whether capture should be emitting.
+    """The orchestrator's view of whether capture should be paused.
 
-    Pause when neither vinyl nor (airplay-without-Sonos-metadata) is active:
-    - vinyl: always run capture
-    - airplay with Sonos metadata: pause (Sonos has the answer; UFO202 adds nothing)
-    - airplay without Sonos metadata: run capture (system-audio AirPlay case)
-    - streaming / TV / radio / unknown: pause
+    Capture runs for vinyl only. AirPlay belongs to Sonos with or without
+    metadata (the repoll recovers late metadata), and streaming, TV, radio
+    and unknown never go through the capture device.
     """
-    src = state.sonos_source
-    if src == "vinyl":
-        return False
-    if src == "airplay" and not state.sonos_has_metadata:
-        return False
-    return True
+    return state.sonos_source != "vinyl"

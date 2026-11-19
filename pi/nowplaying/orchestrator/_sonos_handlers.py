@@ -163,9 +163,9 @@ class SonosHandlersMixin:
         state.idle_task = None
 
     def _reconcile_capture_emit(self) -> None:
-        """Reconcile capture emit state on every event — covers source
-        changes AND metadata appearing/disappearing during an AirPlay
-        session. Only update local state when signal delivery succeeded.
+        """Reconcile capture emit state on every event, so a source change
+        pauses or resumes capture and a failed signal is retried on the
+        next event. Only update local state when signal delivery succeeded.
         """
         state = self.state
         desired_paused = _should_pause_capture(state)
@@ -176,11 +176,10 @@ class SonosHandlersMixin:
             state.capture_emit_paused = desired_paused
 
     def _recover_unmatched_from_cache(self, payload: dict) -> dict:
-        """When a Sonos event arrives for a UFO202-listened source with
-        no title, prefer the last cached recognition for that same source
-        if we have one. Prevents flickering to "Unknown" during volume
-        changes or transport-only events that lack metadata. Returns the
-        (possibly replaced) payload.
+        """When a vinyl or AirPlay event arrives with no title, prefer the
+        last cached track for that same source if we have one. Prevents
+        flickering to "Unknown" during volume changes or transport-only
+        events that lack metadata. Returns the (possibly replaced) payload.
         """
         state = self.state
         if payload["source"] not in ("vinyl", "airplay") or payload["title"]:
@@ -231,13 +230,10 @@ class SonosHandlersMixin:
 
     async def on_capture_state(self, s: str) -> None:
         state = self.state
-        # Common guards: capture state events only apply to UFO202-listened
-        # sources (vinyl + AirPlay-without-Sonos-metadata). Streaming with
-        # Sonos metadata has its own publish path.
-        if (
-            state.sonos_source not in ("vinyl", "airplay")
-            or state.capture_emit_paused
-        ):
+        # Capture edges describe the turntable. Every other source is
+        # published from Sonos events, so an edge that slips through before
+        # capture is paused must not arm the vinyl idle or publish.
+        if state.sonos_source != "vinyl" or state.capture_emit_paused:
             return
         if s == "silent":
             self._handle_capture_silent()
@@ -257,10 +253,8 @@ class SonosHandlersMixin:
         state.predicted_position = None
         if state.idle_task is not None and not state.idle_task.done():
             return
-        # Tag with current source (vinyl or airplay-no-metadata) so
-        # the STOPPED publish stays accurate.
         state.idle_task = asyncio.create_task(
-            self._idle_after_delay(VINYL_IDLE_DELAY_S, state.sonos_source),
+            self._idle_after_delay(VINYL_IDLE_DELAY_S, "vinyl"),
         )
 
     async def _handle_capture_audible(self) -> None:
@@ -274,14 +268,11 @@ class SonosHandlersMixin:
         state.pending_shazam_only.clear()
         state.track_started_at = None
         log.info("audible: cleared per-side recognition state")
-        audio_source_label = (
-            "vinyl" if state.sonos_source == "vinyl" else "airplay"
-        )
+        audio_source_label = "vinyl"
         if state.last_vinyl is not None:
             # Cancel any in-flight idle timer FIRST so it doesn't
-            # fire 45s later and wipe the lock out from under the
-            # prediction we're about to publish (PR #109 review
-            # blocker).
+            # fire and wipe the lock out from under the prediction
+            # we're about to publish.
             if state.idle_task is not None and not state.idle_task.done():
                 state.idle_task.cancel()
                 state.idle_task = None
