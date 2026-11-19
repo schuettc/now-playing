@@ -316,3 +316,18 @@ def test_build_shazam_prompt_handles_missing_fields():
 # feature `promotion-on-confirmation` — promotion is no longer
 # Shazam-hit-driven and no longer needs an LLM sanity gate. The user's
 # pin is the sanity check; the cross-cohort audio guard backs it up.
+
+
+def test_first_warning_logs_on_a_freshly_booted_machine(keyed_env, caplog):
+    """time.monotonic() counts from boot on Linux, so within the first
+    ERROR_WARN_INTERVAL_S of uptime it is smaller than the interval. The
+    first failure of a class must still be logged."""
+    a = llm.LLMAssist()
+    with (
+        mock.patch("nowplaying.llm._assist.time.monotonic", return_value=12.0),
+        caplog.at_level(logging.WARNING, logger="nowplaying.llm"),
+    ):
+        a._warn_throttled(RuntimeError("boom"))
+        a._warn_throttled(RuntimeError("boom again"))
+    warns = [r for r in caplog.records if "RuntimeError" in r.getMessage()]
+    assert len(warns) == 1
