@@ -27,7 +27,7 @@ from typing import Optional
 import aiohttp
 
 from nowplaying import artcache
-from nowplaying.net_allowlist import is_allowed_upstream
+from nowplaying.net_allowlist import is_allowed_upstream, open_checked
 
 log = logging.getLogger("nowplaying.art_overrides")
 
@@ -318,8 +318,8 @@ async def _fetch_override_payload(
     as top-only strips).
     """
     try:
-        async with session.get(  # skylos: ignore SKY-D216 — url already validated by is_allowed_upstream() above
-            url,
+        async with open_checked(
+            session.get, url,
             timeout=aiohttp.ClientTimeout(total=FETCH_TIMEOUT_S),
             headers=_FETCH_HEADERS,
         ) as resp:

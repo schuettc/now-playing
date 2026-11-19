@@ -24,10 +24,16 @@ from pathlib import Path
 
 import aiohttp
 
+from nowplaying.net_allowlist import open_checked
+
 log = logging.getLogger("nowplaying.artcache")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CACHE_DIR = REPO_ROOT / "pi" / "data" / "art" / "cache"
+
+# Largest upstream body stored. Matches art_overrides.MAX_BYTES.
+MAX_BYTES = 8 * 1024 * 1024
+_CHUNK_BYTES = 64 * 1024
 
 # One lock per key so concurrent /art-cache/<key> requests don't fire
 # duplicate upstream fetches before the file lands on disk.
@@ -121,7 +127,26 @@ async def _read_image_response(
             ctype, upstream_url,
         )
         return 502, None, None
-    return 200, ctype, await resp.read()
+    data = await _read_capped(resp)
+    if data is None:
+        log.warning(
+            "artcache upstream body exceeds %d bytes url=%s",
+            MAX_BYTES, upstream_url,
+        )
+        return 502, None, None
+    return 200, ctype, data
+
+
+async def _read_capped(resp: "aiohttp.ClientResponse") -> bytes | None:
+    """Read the body, giving up (None) once it passes ``MAX_BYTES``."""
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in resp.content.iter_chunked(_CHUNK_BYTES):
+        total += len(chunk)
+        if total > MAX_BYTES:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 async def _fetch_upstream(
@@ -133,10 +158,13 @@ async def _fetch_upstream(
 
     Returns (bytes, content_type, 200) on success, or (None, None, status)
     where status is 404 (definitively missing) or 502 (transient / unusable).
+    The caller (api.art_cache_handler) gates ``upstream_url`` through
+    ``is_allowed_upstream``; redirects are re-checked per hop.
     """
     try:
-        async with session.get(  # skylos: ignore SKY-D216 — sole caller (api.art_cache_handler) gates upstream_url through is_allowed_upstream
-            upstream_url, timeout=aiohttp.ClientTimeout(total=timeout_s)
+        async with open_checked(
+            session.get, upstream_url,
+            timeout=aiohttp.ClientTimeout(total=timeout_s),
         ) as resp:
             status, ctype, data = await _read_image_response(resp, upstream_url)
     except (aiohttp.ClientError, asyncio.TimeoutError) as e:
