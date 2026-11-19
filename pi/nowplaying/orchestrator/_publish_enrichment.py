@@ -238,7 +238,7 @@ class PublishEnrichmentMixin:
         title = (payload.get("title") or "").strip()
         if not artist or not title:
             return payload
-        rel = self._lookup_discogs_release(artist, title)
+        rel = self._lookup_discogs_release(artist, title, payload.get("album"))
         if not rel:
             return payload
         enriched = self._apply_discogs_release_to_payload(payload, rel)
@@ -249,13 +249,18 @@ class PublishEnrichmentMixin:
         )
         return enriched
 
-    def _lookup_discogs_release(self, artist: str, title: str) -> dict | None:
-        """Wrap discogs_catalog.find_by_artist_title with exception logging."""
+    def _lookup_discogs_release(
+        self, artist: str, title: str, album: str | None,
+    ) -> dict | None:
+        """Wrap discogs_catalog.find_by_artist_title with exception logging.
+        Scoped to the reported album: a song also on a compilation the user
+        owns must not resolve to the compilation."""
         try:
             return discogs_catalog.find_by_artist_title(
                 artist=artist,
                 title=title,
                 preferred_release_id=None,
+                album=album or None,
             )
         except Exception as e:  # noqa: BLE001
             log.warning("airplay discogs enrich failed: %r", e)

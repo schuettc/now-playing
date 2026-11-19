@@ -1,10 +1,11 @@
-"""On-disk cache for album art, keyed by release ID or source art URL.
+"""On-disk cache for album art proxied from Sonos and other upstreams.
 
-On identified AirPlay/Sonos albums, the release ID stabilizes the image
-across per-track `getaa` URLs. Unknown albums use the exact upstream URL:
-that can reload between tracks, but cannot return another self-titled
-album's cached bytes. Legacy artist+album cache entries are left on disk
-but never consulted by the service-art path.
+Sonos art is cached per track (``key_for_track``): one AirPlay session
+reuses a single `getaa` URL and Sonos answers it with whatever is playing
+at fetch time, so neither the URL nor the album can key it safely. A fetch
+that lands mid-change stores the wrong image for that one track only.
+Legacy artist+album and release-keyed entries are left on disk but never
+consulted by the service-art path.
 
 Each cached item is two files:
     pi/data/art/cache/<hash>.bin       — the raw image bytes
@@ -52,22 +53,22 @@ def key_for(artist: str | None, album: str | None) -> str | None:
     return h[:16]
 
 
-def key_for_art(
-    artist: str | None, album: str | None, upstream_url: str | None,
-    *, release_id: int | None = None,
-) -> str | None:
-    """Namespace service art by release, or by exact upstream URL if unknown.
-
-    Artist+album alone is not an album identity (eponymous releases can
-    share both). Unknown releases trade cross-track stability for correctness.
-    """
-    if release_id is not None and release_id > 0:
-        identity = f"release:{release_id}"
-    elif upstream_url:
-        identity = f"upstream:{upstream_url}"
-    else:
+def key_for_release(release_id: int) -> str | None:
+    """Key for a release's art pick. Artist+album alone is not an album
+    identity: eponymous releases share both."""
+    if release_id <= 0:
         return None
-    return hashlib.sha1(identity.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha1(f"release:{release_id}".encode()).hexdigest()[:16]
+
+
+def key_for_track(
+    artist: str | None, album: str | None, title: str | None, upstream_url: str,
+) -> str:
+    """Key for service art: the track as the service reported it, plus the
+    upstream URL so a replay in a later session fetches afresh."""
+    parts = [(v or "").strip().lower() for v in (artist, album, title)]
+    identity = "track:" + "|".join([*parts, upstream_url])
+    return hashlib.sha1(identity.encode()).hexdigest()[:16]
 
 
 def is_valid_key(key: str) -> bool:

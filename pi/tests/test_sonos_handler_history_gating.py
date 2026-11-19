@@ -53,23 +53,20 @@ def _event(title="Crooked Teeth"):
     }
 
 
-def test_sonos_publish_rekeys_service_art_after_release_match():
-    """An identified LP2 and LP4 cannot share an artist+album proxy image."""
+def test_sonos_publish_keys_art_per_track_within_one_airplay_session():
+    """Two tracks of one AirPlay session share a getaa URL but not an image."""
     o = _make_orch()
-    o._enrich_sonos_with_discogs = lambda p: {**p, "release_id": 9191767 if p["title"] == "LP2 song" else 99999}
-    lp2 = {**_event(title="LP2 song"), "artist": "American Football",
-           "album": "American Football", "album_art": "http://sonos:1400/getaa?u=lp2"}
-    lp4 = {**lp2, "title": "LP4 song", "album_art": "http://sonos:1400/getaa?u=lp4"}
+    o._enrich_sonos_with_discogs = lambda p: {**p, "release_id": 35721814}
+    first_ev = {**_event(title="Glass Onion"), "artist": "The Beatles",
+                "album": "The Beatles", "album_art": "http://sonos:1400/getaa?u=1149692896"}
+    second_ev = {**first_ev, "title": "Ob-La-Di, Ob-La-Da"}
     with mock.patch("nowplaying.history.record_play", new=mock.AsyncMock()):
-        _run(o.on_sonos_event(lp2))
+        _run(o.on_sonos_event(first_ev))
         first = o.bcast._last["art_url"]
-        _run(o.on_sonos_event(lp4))
+        _run(o.on_sonos_event(second_ev))
         second = o.bcast._last["art_url"]
     assert first.startswith("/art-cache/")
-    assert second.startswith("/art-cache/")
     assert first.split("?")[0] != second.split("?")[0]
-    assert "u=http%3A%2F%2Fsonos%3A1400%2Fgetaa%3Fu%3Dlp2" in first
-    assert "u=http%3A%2F%2Fsonos%3A1400%2Fgetaa%3Fu%3Dlp4" in second
 
 
 def test_suppressed_publish_records_extend_only():

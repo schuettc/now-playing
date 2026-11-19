@@ -19,11 +19,11 @@ SOURCE_MAP = {
 }
 
 
-def service_art_url(ev: dict, *, release_id: int | None = None) -> str | None:
-    """Proxy Sonos art under a release key, or the exact source URL when unknown.
+def service_art_url(ev: dict) -> str | None:
+    """Proxy Sonos art under a per-track key (see ``artcache.key_for_track``).
 
-    Polled events may already carry the listener's provisional proxy URL;
-    extract its original `u` before assigning the final release identity.
+    Polled events may already carry a legacy proxy URL; extract its
+    original `u` first.
     """
     from nowplaying import artcache
 
@@ -34,8 +34,8 @@ def service_art_url(ev: dict, *, release_id: int | None = None) -> str | None:
         art_url = parse_qs(urlsplit(art_url).query).get("u", [None])[0]
     if not art_url:
         return None
-    key = artcache.key_for_art(ev.get("artist"), ev.get("album"), art_url, release_id=release_id)
-    return f"/art-cache/{key}?u={_urlquote(art_url, safe='')}" if key else art_url
+    key = artcache.key_for_track(ev.get("artist"), ev.get("album"), ev.get("title"), art_url)
+    return f"/art-cache/{key}?u={_urlquote(art_url, safe='')}"
 
 
 def _cached_art_url(ev: dict) -> str | None:

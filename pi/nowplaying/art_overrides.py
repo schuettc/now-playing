@@ -214,7 +214,7 @@ def _ext_from_content_type(ctype: str) -> str:
 
 def _target_key(artist: str, album: str, release_id: int | None) -> str | None:
     if release_id is not None:
-        return artcache.key_for_art(artist, album, None, release_id=release_id)
+        return artcache.key_for_release(release_id)
     return key_for(artist, album)
 
 

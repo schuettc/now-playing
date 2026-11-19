@@ -39,14 +39,18 @@ def test_key_for_returns_none_on_missing_fields():
     assert artcache.key_for("", "") is None
 
 
-def test_service_art_key_separates_self_titled_releases_and_upstreams():
-    lp2 = artcache.key_for_art("American Football", "American Football", "http://sonos/getaa?u=lp2", release_id=9191767)
-    lp2_next_track = artcache.key_for_art("American Football", "American Football", "http://sonos/getaa?u=other-lp2-track", release_id=9191767)
-    lp4 = artcache.key_for_art("American Football", "American Football", "http://sonos/getaa?u=lp4", release_id=99999)
-    unknown_lp4 = artcache.key_for_art("American Football", "American Football", "http://sonos/getaa?u=lp4")
-    unknown_lp2 = artcache.key_for_art("American Football", "American Football", "http://sonos/getaa?u=lp2")
-    assert lp2 == lp2_next_track
-    assert len({lp2, lp4, unknown_lp4, unknown_lp2, artcache.key_for("American Football", "American Football")}) == 5
+def test_release_key_matches_existing_override_index_keys():
+    """Override picks on disk are indexed under this hash; it must not drift."""
+    assert artcache.key_for_release(4033122) == "f1db4e25edf56b1a"
+    assert artcache.key_for_release(0) is None
+
+
+def test_track_key_separates_tracks_sharing_one_session_url():
+    url = "http://sonos/getaa?u=1149692896"
+    glass = artcache.key_for_track("The Beatles", "The Beatles", "Glass Onion", url)
+    assert glass == artcache.key_for_track(" the beatles", "THE BEATLES", "glass onion ", url)
+    assert glass != artcache.key_for_track("The Beatles", "The Beatles", "Wild Honey Pie", url)
+    assert glass != artcache.key_for_track("The Beatles", "The Beatles", "Glass Onion", url + "1")
 
 
 def test_is_valid_key_format():
