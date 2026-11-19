@@ -282,6 +282,10 @@ class SonosHandlersMixin:
         self._record_audible_edge_for_llm(state, "audible")
         state.pending_shazam_only.clear()
         state.track_started_at = None
+        # A fingerprint anchor describes the audio before this edge. Past a
+        # quiet gap it must not hold the display on that track or tag new
+        # refs with it; the next strong match on fresh audio sets it again.
+        state.fingerprint_anchor = None
         log.info("audible: cleared per-side recognition state")
         audio_source_label = "vinyl"
         if state.last_vinyl is not None:

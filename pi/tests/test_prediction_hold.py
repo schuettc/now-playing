@@ -136,3 +136,67 @@ async def test_gap_advance_records_the_predicted_tracks_start_and_length():
     assert predicted["track_position"] == "A2"
     assert predicted["duration_seconds"] == 246
     assert predicted["track_started_at"] is not None
+
+
+# Side B: B6 "Blank" (339 s) matched by fingerprint at 16:20:36, the gap
+# before B7 at 16:21:06, then clips of B7 saved as B6 at 348.1 s.
+
+def _b6_anchor(now_mono: float, matched_s_ago: float, ref_position_s: float) -> dict:
+    return {
+        "release_id": 31427573, "mbid": None, "track_position": "B6",
+        "monotonic_ts": now_mono - matched_s_ago, "hits": 65,
+        "duration_seconds": 339, "last_matched_ref_position_s": ref_position_s,
+    }
+
+
+@pytest.mark.asyncio
+async def test_no_promotion_past_the_tracks_length():
+    """16:21:08: `promotion: coverage-gap (anchor) ... pos=B6
+    track_position_s=348.1 duration=339 — scheduling`."""
+    from nowplaying.vinyl import promotion
+
+    state = State()
+    state.sonos_source = "vinyl"
+    orch = _orch(state)
+    orch.fingerprint_enabled = True
+    now_mono = asyncio.get_running_loop().time()
+    state.fingerprint_anchor = _b6_anchor(now_mono, 31.6, 316.5)
+
+    with mock.patch.object(
+        promotion, "should_promote_for_coverage", return_value=True,
+    ), mock.patch.object(
+        promotion, "maybe_promote", new=mock.AsyncMock(return_value=True),
+    ) as promote:
+        await orch._schedule_coverage_promotion(b"RIFF", -20.0)
+        await asyncio.sleep(0)
+
+    promote.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_gap_after_fingerprint_match_ends_the_anchor():
+    """16:21:23: `predicted: suppressed advance (fingerprint anchor ...
+    pos=B6 ...)` after the gap at 16:21:06 had advanced to B7. An anchor set
+    before an audible edge says nothing about the audio after it."""
+    state = _state_a1_confirmed()
+    orch = _orch(state)
+    orch.fingerprint_enabled = True
+    orch.bcast.publish = mock.AsyncMock(return_value=True)
+    now_mono = asyncio.get_running_loop().time()
+    state.fingerprint_anchor = _b6_anchor(now_mono, 30.0, 280.0)
+
+    with mock.patch(
+        "nowplaying.catalog.get_release", return_value=RELEASE,
+    ), mock.patch("nowplaying.history.record_play", new=mock.AsyncMock()):
+        await orch._handle_capture_audible()
+
+    assert orch._decide_suppress_advance(state, now_mono) is False
+    with mock.patch(
+        "nowplaying.vinyl.promotion.should_promote_for_coverage", return_value=True,
+    ), mock.patch(
+        "nowplaying.vinyl.promotion.maybe_promote",
+        new=mock.AsyncMock(return_value=True),
+    ) as promote:
+        await orch._schedule_coverage_promotion(b"RIFF", -20.0)
+        await asyncio.sleep(0)
+    promote.assert_not_called()
