@@ -41,8 +41,8 @@ HEARTBEAT_INTERVAL_S = 15
 # See docs/features/predicted-advance-duration-guard/.
 PREDICTED_ADVANCE_TOLERANCE_S = 30
 
-# Vinyl silence-driven idle (existing 45s path, now a named
-# constant for parity with the streaming threshold).
+# Vinyl silence-driven idle: seconds of silence before the kiosk goes
+# to the idle clock.
 VINYL_IDLE_DELAY_S = 120
 # Maximum age (seconds) of the last confident recognition before the
 # orchestrator decays state.last_vinyl to None and transitions to

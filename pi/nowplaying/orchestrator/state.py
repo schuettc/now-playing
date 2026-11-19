@@ -90,8 +90,8 @@ class State:  # skylos: ignore SKY-Q501 — State is intentionally the orchestra
         self.unmatched_streak: int = 0
         # ISO-8601 timestamp anchored at the most recent track-identity change.
         self.track_started_at: str | None = None
-        # (release_id, track_position) of the last published identity.
-        self.last_published_identity: tuple = (None, None)
+        # (artist, title, track_position) of the last published identity.
+        self.last_published_identity: tuple = (None, None, None)
         # Unix wall-clock timestamp of the most recent Shazam-confirmed
         # match against the currently-locked release. Stamped ONLY by
         # `_publish_shazam_match` (NOT by predicted-advance refreshes,
