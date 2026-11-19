@@ -7,10 +7,11 @@ over HTTP for one-shot endpoints (`/api/now-playing`,
 `/api/collection/search`, `/api/identify`, `/api/album-stats`,
 `/api/album-context`, `/api/art-candidates`, `/api/art-override`).
 
-The kiosk's `dist/` is committed because the target Raspberry Pi has
-no Node toolchain — it consumes the pre-built bundle directly via
-Chromium kiosk mode. Rebuild on a dev machine (`pnpm build`) before
-pushing.
+The kiosk's `dist/` is not committed (it is gitignored), and the target
+Raspberry Pi has no Node toolchain — the orchestrator serves a pre-built
+bundle off disk to Chromium in kiosk mode. Build on a dev machine
+(`pnpm build`) and copy `dist/` to the Pi's `~/now-playing/kiosk/dist/`
+(see "Build the kiosk bundle" in `docs/INSTALL.md`).
 
 ## Folder map
 

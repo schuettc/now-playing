@@ -10,7 +10,7 @@ A Raspberry Pi kiosk that listens to your Sonos zone's line-in stream and identi
 
 - The display shows the track currently on the turntable, with high-resolution album art.
 - Drop a needle on a new track: the display updates within ~15 seconds.
-- Lift the needle: the display reverts to a clock after ~50 seconds.
+- Lift the needle: the display reverts to a clock after ~2 minutes.
 
 Most of the time the kiosk runs hands-free. When Shazam can't identify a track, the kiosk shows a **BEST GUESS card** with the predicted next track from the album's tracklist and asks you to confirm with one tap. On subsequent plays it remembers and stops asking — the system gets smarter the more you play.
 
@@ -98,7 +98,7 @@ No explicit invocation needed; describe the situation and the relevant skill act
 
 **Core (always on):**
 - Sonos zone discovery + state tracking via UPnP (soco + events_asyncio)
-- Continuous heartbeat audio capture (UFO202, 15s cadence, -15 dB silence floor)
+- Continuous heartbeat audio capture (UFO202, 15s cadence, -34 dB silence floor)
 - Shazam-first recognition with Discogs catalog enrichment when available; MusicBrainz-driven album discovery for off-Discogs records (persisted to `discovered.sqlite`)
 - Tracklist-aware advancement: when Shazam misses on an album-locked side, the orchestrator predicts the next track from the locked album's tracklist
 - Local fingerprint cascade for both Discogs and MusicBrainz-discovered releases — passively trained from confirmed Shazam hits
