@@ -389,13 +389,29 @@ def _suite_artist_scan(artist: str) -> Optional[dict]:
     return rel
 
 
+_ALBUM_SIM_FLOOR = 0.85
+
+
+def _album_matches(album: str | None, release_title: str | None) -> bool:
+    """True when no album was reported, or the release title is that album.
+    Parentheticals drop out, so "Plans (Remastered)" matches "Plans"."""
+    if not album:
+        return True
+    return _string_sim(_normalize(album), _normalize(release_title or "")) >= _ALBUM_SIM_FLOOR
+
+
 def find_by_artist_title(
     artist: str,
     title: str,
     *,
     preferred_release_id: int | None = None,
+    album: str | None = None,
 ) -> Optional[dict]:
     """Reverse-lookup with slash-split + suite-name fallbacks for Shazam.
+
+    ``album`` (AirPlay and streaming report one) restricts every path to
+    releases with that title; without it a song also on a compilation the
+    user owns resolves to the compilation.
 
     Runs the primary lookup first. On miss:
 
@@ -417,7 +433,7 @@ def find_by_artist_title(
     check would never fire.
     """
     primary = _find_by_artist_title_primary(
-        artist, title, preferred_release_id=preferred_release_id,
+        artist, title, preferred_release_id=preferred_release_id, album=album,
     )
     if primary is not None:
         return primary
@@ -427,14 +443,14 @@ def find_by_artist_title(
         right = right.strip()
         left_hit = (
             _find_by_artist_title_primary(
-                artist, left, preferred_release_id=preferred_release_id,
+                artist, left, preferred_release_id=preferred_release_id, album=album,
             )
             if left
             else None
         )
         right_hit = (
             find_by_artist_title(
-                artist, right, preferred_release_id=preferred_release_id,
+                artist, right, preferred_release_id=preferred_release_id, album=album,
             )
             if right
             else None
@@ -448,9 +464,12 @@ def find_by_artist_title(
             return winner
     if preferred_release_id is not None:
         sticky = _suite_fallback(artist, preferred_release_id)
-        if sticky is not None:
+        if sticky is not None and _album_matches(album, sticky.get("title")):
             return sticky
-    return _suite_artist_scan(artist)
+    scanned = _suite_artist_scan(artist)
+    if scanned is not None and _album_matches(album, scanned.get("title")):
+        return scanned
+    return None
 
 
 def _score_candidate(
@@ -553,6 +572,7 @@ def _find_by_artist_title_primary(
     title: str,
     *,
     preferred_release_id: int | None = None,
+    album: str | None = None,
 ) -> Optional[dict]:
     """Primary reverse-lookup path: Shazam returns SONG title + ARTIST. We
     need the Discogs RELEASE containing that song.
@@ -608,7 +628,8 @@ def _find_by_artist_title_primary(
     # sticky dominate even when the user is clearly on a different album.
     candidates = [
         cand for r in rows
-        if (cand := _score_candidate(
+        if _album_matches(album, r["album"])
+        and (cand := _score_candidate(
             r, target_artist_tokens, target_title_tokens,
             norm_artist, norm_track_title, preferred_release_id,
         )) is not None

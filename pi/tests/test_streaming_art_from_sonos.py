@@ -65,29 +65,38 @@ def _override(epoch: int = 1779478774) -> Override:
     )
 
 
-def test_sonos_art_uses_distinct_release_cache_after_metadata_match() -> None:
-    from nowplaying.orchestrator.payload import service_art_url, sonos_to_payload
-
-    ev = {"ts": "2026-09-29T12:00:00Z", "source": "airplay",
-          "artist": "American Football", "album": "American Football",
-          "album_art": "http://sonos:1400/getaa?u=lp2"}
-    before = sonos_to_payload(ev)["art_url"]
-    lp2 = service_art_url(ev, release_id=9191767)
-    lp2_next = service_art_url({**ev, "album_art": "http://sonos:1400/getaa?u=lp2-next"}, release_id=9191767)
-    lp4 = service_art_url({**ev, "album_art": "http://sonos:1400/getaa?u=lp4"}, release_id=99999)
-    assert before != lp2
-    assert lp2.split("?")[0] == lp2_next.split("?")[0]
-    assert lp2.split("?")[0] != lp4.split("?")[0]
-    assert "u=http%3A%2F%2Fsonos%3A1400%2Fgetaa%3Fu%3Dlp2" in lp2
-
-
-def test_legacy_proxied_sonos_url_is_unwrapped_before_release_rekey() -> None:
+def test_sonos_art_is_cached_per_track_not_per_session() -> None:
+    """Sonos reuses one getaa URL for a whole AirPlay session and serves
+    whatever is playing at fetch time, so the URL cannot key the cache."""
     from nowplaying.orchestrator.payload import service_art_url
 
-    ev = {"artist": "American Football", "album": "American Football",
+    ev = {"artist": "The Beatles", "album": "The Beatles", "title": "Wild Honey Pie",
+          "album_art": "http://sonos:1400/getaa?v=0&vli=1&u=1149692896"}
+    same = service_art_url(dict(ev))
+    next_track = service_art_url({**ev, "title": "The Continuing Story of Bungalow Bill"})
+    assert service_art_url(ev).split("?")[0] == same.split("?")[0]
+    assert service_art_url(ev).split("?")[0] != next_track.split("?")[0]
+    assert "u=http%3A%2F%2Fsonos%3A1400%2Fgetaa%3Fv%3D0%26vli%3D1%26u%3D1149692896" in same
+
+
+def test_legacy_proxied_sonos_url_is_unwrapped() -> None:
+    from nowplaying.orchestrator.payload import service_art_url
+
+    ev = {"artist": "American Football", "album": "American Football", "title": "Uncomfortably Numb",
           "album_art": "/art-cache/oldnamekey?u=http%3A%2F%2Fsonos%3A1400%2Fgetaa%3Fu%3Dlp2"}
     raw = {**ev, "album_art": "http://sonos:1400/getaa?u=lp2"}
-    assert service_art_url(ev, release_id=9191767) == service_art_url(raw, release_id=9191767)
+    assert service_art_url(ev) == service_art_url(raw)
+
+
+def test_enrichment_scopes_the_discogs_lookup_to_the_reported_album() -> None:
+    with patch(
+        "nowplaying.orchestrator._publish_enrichment.discogs_catalog.find_by_artist_title",
+        return_value=None,
+    ) as lookup:
+        out = _Enricher()._enrich_sonos_with_discogs(_payload())
+    assert lookup.call_args.kwargs["album"] == "Plans"
+    assert out["album"] == "Plans"
+    assert "release_id" not in out
 
 
 def test_discogs_match_keeps_the_sonos_art() -> None:

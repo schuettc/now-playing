@@ -49,7 +49,7 @@ def _primary_lookup(returns: dict[str, dict | None]):
     """Build a mock for `_find_by_artist_title_primary` that returns a
     crafted dict keyed by title (any other title -> None)."""
 
-    def _impl(artist, title, *, preferred_release_id=None):  # skylos: ignore — test mock; inconsistent return is the emulated behavior
+    def _impl(artist, title, *, preferred_release_id=None, album=None):  # skylos: ignore — test mock; inconsistent return is the emulated behavior
         result = returns.get(title)
         if result is None:
             return None
@@ -125,7 +125,7 @@ def test_bare_slash_not_split():
     """Bare `/` without surrounding spaces is NOT split (e.g. `"S/T"`)."""
     calls: list[str] = []
 
-    def _impl(artist, title, *, preferred_release_id=None):  # skylos: ignore — test mock; inconsistent return is the emulated behavior
+    def _impl(artist, title, *, preferred_release_id=None, album=None):  # skylos: ignore — test mock; inconsistent return is the emulated behavior
         calls.append(title)
         return None
 
@@ -140,7 +140,7 @@ def test_no_slash_no_recursion():
     """Title without ` / ` and no primary match → returns None, no extra calls."""
     calls: list[str] = []
 
-    def _impl(artist, title, *, preferred_release_id=None):  # skylos: ignore — test mock; inconsistent return is the emulated behavior
+    def _impl(artist, title, *, preferred_release_id=None, album=None):  # skylos: ignore — test mock; inconsistent return is the emulated behavior
         calls.append(title)
         return None
 
@@ -172,7 +172,7 @@ def test_primary_match_short_circuits():
     """If primary lookup succeeds on the unsplit title, no split is attempted."""
     calls: list[str] = []
 
-    def _impl(artist, title, *, preferred_release_id=None):  # skylos: ignore — test mock; inconsistent return is the emulated behavior
+    def _impl(artist, title, *, preferred_release_id=None, album=None):  # skylos: ignore — test mock; inconsistent return is the emulated behavior
         calls.append(title)
         return {"id": 42, "match_score": 95, "title": "Some Album"}
 

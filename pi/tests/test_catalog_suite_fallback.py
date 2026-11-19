@@ -85,7 +85,7 @@ PLAIN_LP = {
 }
 
 
-def _primary_returns_none(artist, title, *, preferred_release_id=None):
+def _primary_returns_none(artist, title, *, preferred_release_id=None, album=None):
     return None
 
 

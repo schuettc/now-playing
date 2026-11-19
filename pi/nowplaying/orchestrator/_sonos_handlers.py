@@ -15,7 +15,7 @@ import signal
 import recognize_proto
 
 from nowplaying import history
-from nowplaying.orchestrator.payload import service_art_url, sonos_to_payload
+from nowplaying.orchestrator.payload import sonos_to_payload
 from nowplaying.orchestrator.streaming_idle import (
     STREAMING_IDLE_DELAY_S,
     VINYL_IDLE_DELAY_S,
@@ -67,10 +67,6 @@ class SonosHandlersMixin:
         # the album tracklist; streaming skips it because it has a real
         # Sonos queue (see below).
         payload = self._enrich_sonos_with_discogs(payload)
-        # Re-key service art after Discogs identifies the exact release.
-        # Never re-key a Discogs fallback when Sonos provided no image.
-        if payload.get("source") in ("airplay", "streaming") and ev.get("album_art"):
-            payload["art_url"] = service_art_url(ev, release_id=payload.get("release_id"))
         # A release pick beats service art; a name-only pick applies only
         # without release identity. Keep this outside Discogs enrichment so
         # unmatched streams can still use their own manual picks.
