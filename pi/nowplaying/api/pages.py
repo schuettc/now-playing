@@ -16,7 +16,7 @@ async def index_handler(_request: web.Request) -> web.Response:
             text=(
                 "kiosk/dist not built yet.\n"
                 "On a dev machine: cd kiosk && pnpm install && pnpm build\n"
-                "Then commit and `git pull` on the Pi.\n"
+                "Then copy kiosk/dist/ to the Pi (see docs/INSTALL.md).\n"
             ),
         )
     # Cache-Control: no-store ensures Chromium always re-fetches the

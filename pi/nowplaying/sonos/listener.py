@@ -202,4 +202,10 @@ async def emit_initial_state(zone_name: str, on_event: EventHandler) -> None:
 
 
 def get_zone_name() -> str:
-    return os.environ.get("SONOS_ZONE_NAME", "Office")
+    zone = os.environ.get("SONOS_ZONE_NAME", "").strip()
+    if not zone:
+        raise SystemExit(
+            "SONOS_ZONE_NAME is not set: put the Sonos room name, exactly as "
+            "the Sonos app shows it, in pi/.env",
+        )
+    return zone
