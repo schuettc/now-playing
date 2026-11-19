@@ -184,6 +184,9 @@ def _evaluate_sticky_idle(
       "short_circuit" — same source/state/title as when we idled; drop event.
       "clear"         — genuine change; caller clears idled_source/title
                         then proceeds with the event.
+
+    An event without a title is not a title change: a resubscribe on a
+    paused session answers with an empty DIDL before the metadata follows.
     """
     if idled_source is None:
         return "no_op"
@@ -191,7 +194,7 @@ def _evaluate_sticky_idle(
     still_paused_or_stopped = payload_state in (
         "PAUSED_PLAYBACK", "STOPPED", "TRANSITIONING",
     )
-    title_unchanged = idled_title == payload_title
+    title_unchanged = payload_title is None or idled_title == payload_title
     if same_source and still_paused_or_stopped and title_unchanged:
         return "short_circuit"
     return "clear"

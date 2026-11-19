@@ -33,14 +33,20 @@ TRACK = {
 }
 
 
-def _make_orch(source: str, *, has_metadata: bool, last_vinyl=None):
+def _make_orch(
+    source: str, *, has_metadata: bool, last_vinyl=None,
+    transport: str = "PLAYING",
+):
     from nowplaying.main import Orchestrator
 
     o = Orchestrator.__new__(Orchestrator)
     o.state = mock.MagicMock()
     o.state.sonos_source = source
+    o.state.sonos_state = transport
     o.state.sonos_has_metadata = has_metadata
     o.state.last_vinyl = last_vinyl
+    o.state.idled_source = None
+    o.state.idled_title = None
     o.on_sonos_event = mock.AsyncMock()
     return o
 
@@ -58,6 +64,40 @@ def test_repoll_recovers_airplay_that_started_without_metadata():
     assert ev["title"] == "Someday You Will Be Loved"
     assert ev["artist"] == "Death Cab for Cutie"
     assert ev["source"] == "airplay"
+    assert ev["state"] == "PLAYING"
+
+
+def test_repoll_reports_the_real_transport_state_when_paused():
+    """A track change polled on a paused session is published as paused,
+    so it cannot cancel the pause-idle or tell the kiosk it is playing."""
+    o = _make_orch(
+        "airplay", has_metadata=True, transport="PAUSED_PLAYBACK",
+        last_vinyl={"title": "Crooked Teeth", "artist": TRACK["artist"]},
+    )
+    with mock.patch(
+        "nowplaying.orchestrator._publish_enrichment.poll_track",
+        new=mock.AsyncMock(return_value=dict(TRACK)),
+    ):
+        _run(o._run_repoll_tick(mock.MagicMock()))
+    ev = o.on_sonos_event.await_args.args[0]
+    assert ev["state"] == "PAUSED_PLAYBACK"
+
+
+def test_repoll_does_not_wake_a_session_that_idled_while_paused():
+    """The idle clears last_vinyl, so the polled title looks new. The
+    session is still paused on the same track: nothing may be dispatched."""
+    o = _make_orch(
+        "airplay", has_metadata=True, transport="PAUSED_PLAYBACK",
+        last_vinyl=None,
+    )
+    o.state.idled_source = "airplay"
+    o.state.idled_title = TRACK["title"]
+    with mock.patch(
+        "nowplaying.orchestrator._publish_enrichment.poll_track",
+        new=mock.AsyncMock(return_value=dict(TRACK)),
+    ):
+        _run(o._run_repoll_tick(mock.MagicMock()))
+    o.on_sonos_event.assert_not_awaited()
 
 
 def test_repoll_polls_even_when_has_metadata_is_false():

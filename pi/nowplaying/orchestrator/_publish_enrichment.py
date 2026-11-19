@@ -22,6 +22,7 @@ from nowplaying.vinyl import fingerprint as _fp
 from nowplaying.orchestrator.streaming_idle import (
     HEARTBEAT_INTERVAL_S,
     RECOGNITION_LEAD_S,
+    _evaluate_sticky_idle,
 )
 from nowplaying.orchestrator.prediction import enrich_guess_contract
 
@@ -411,12 +412,14 @@ class PublishEnrichmentMixin:
             await self._run_repoll_tick(sonos_coord)
 
     async def _run_repoll_tick(self, sonos_coord) -> None:
-        """One iteration of the sonos repoll loop: gate on source/state,
-        poll Sonos, and dispatch a synthetic event when the polled track
+        """One iteration of the sonos repoll loop: gate on source, poll
+        Sonos, and dispatch a synthetic event when the polled track
         differs from what's currently published (or unconditionally on
         streaming so queue position advances). Runs for airplay even when
         no metadata has arrived yet — that is exactly the state this loop
-        exists to recover from.
+        exists to recover from. The event carries the transport state of
+        the last real NOTIFY, so a poll never turns a paused session into
+        a playing one.
         """
         state = self.state
         if state.sonos_source not in ("airplay", "streaming"):
@@ -439,6 +442,13 @@ class PublishEnrichmentMixin:
         cached = state.last_vinyl or {}
         if self._repoll_should_skip(cached, polled):
             return
+        # The idle cleared last_vinyl, so an unchanged paused track looks
+        # new here. on_sonos_event would drop it; skip before logging.
+        if _evaluate_sticky_idle(
+            state.idled_source, state.idled_title,
+            state.sonos_source, state.sonos_state, polled.get("title"),
+        ) == "short_circuit":
+            return
         log.info(
             "%s repoll: track now %s — %s",
             state.sonos_source, polled.get("artist"), polled.get("title"),
@@ -459,12 +469,13 @@ class PublishEnrichmentMixin:
 
     def _build_synthetic_event(self, cached: dict, polled: dict) -> dict:
         """Build the synthetic Sonos event passed to on_sonos_event from
-        a repoll tick.
+        a repoll tick. A poll only learns the track, so the transport
+        state is the one the last real NOTIFY reported.
         """
         state = self.state
         synthetic = {
             "ts": recognize_proto.now_iso(),
-            "state": "PLAYING",
+            "state": state.sonos_state,
             "source": state.sonos_source,
             "title": polled["title"],
             "artist": polled["artist"],

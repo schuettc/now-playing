@@ -117,6 +117,19 @@ def test_short_circuit_works_for_airplay_too():
     ) == "short_circuit"
 
 
+def test_short_circuit_when_paused_event_has_no_title():
+    """The watchdog resubscribes 10 minutes after the last NOTIFY, right
+    as the pause-idle fires, and Sonos answers with an empty-DIDL paused
+    event. No title is not a new title: the kiosk stays idle."""
+    assert _evaluate_sticky_idle(
+        idled_source="airplay",
+        idled_title="Inside the Outside",
+        payload_source="airplay",
+        payload_state="PAUSED_PLAYBACK",
+        payload_title=None,
+    ) == "short_circuit"
+
+
 # ---- _evaluate_sticky_idle: clear cases -----------------------------
 
 
