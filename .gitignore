@@ -59,7 +59,6 @@ docs/sweep-plan-*.md
 !.claude/settings.json
 !.claude/hooks/
 !.claude/hooks/**
-pi/uv.lock
 pi/data/fingerprint.db
 pi/data/fingerprint.db-*
 

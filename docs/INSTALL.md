@@ -64,10 +64,25 @@ git clone <repo-url> ~/now-playing
 cd ~/now-playing/pi
 curl -LsSf https://astral.sh/uv/install.sh | sh
 exec $SHELL    # pick up uv on PATH
-uv sync --extra audio --extra discogs --extra shazam
+uv sync --locked --extra audio --extra discogs --extra shazam
 ```
 
 **Verify:** `uv run python -c "import sounddevice; print('ok')"` prints `ok` (from `~/now-playing/pi`).
+
+### Build the kiosk bundle
+
+The Pi has no Node toolchain and `kiosk/dist/` is not in the repo, so build the kiosk on your computer (Node and [pnpm](https://pnpm.io/installation) required) from a clone of the same commit, then copy the bundle to the Pi:
+
+```bash
+cd now-playing/kiosk
+pnpm install --frozen-lockfile
+pnpm build
+rsync -az --delete dist/ pi@nowplaying-pi.local:~/now-playing/kiosk/dist/
+```
+
+The orchestrator serves `kiosk/dist/` off disk. Without it, Step 8 shows `kiosk/dist not built yet` (HTTP 503). Repeat the build and copy after every update that touches `kiosk/`, and after any `git reset` or checkout on the Pi that removes `dist/`.
+
+**Verify:** on the Pi, `ls ~/now-playing/kiosk/dist/index.html` lists the file.
 
 ## Step 4: Get a Discogs token and sync your catalog
 
@@ -115,11 +130,11 @@ uv run python scripts/capture_proto.py
 Drop a needle on a record. Within 15 seconds you should see JSON lines on stdout like:
 
 ```
-{"ts":"2026-05-11T13:00:00Z","event":"started","device":"USB Audio CODEC: - (hw:3,0)","silence_db":-15.0,"heartbeat_s":15.0}
-{"ts":"2026-05-11T13:00:15Z","event":"heartbeat","level_db":-4.2,"clip":"pi/data/clips/...","clip_seconds":10.0}
+{"ts":"2026-05-11T13:00:00Z","event":"started","device":"USB Audio CODEC: - (hw:3,0)","silence_db":-34.0,"heartbeat_s":15.0}
+{"ts":"2026-05-11T13:00:15Z","event":"heartbeat","level_db":-20.4,"clip":"pi/data/clips/...","clip_seconds":12.0}
 ```
 
-**Sanity check:** `level_db` during music should sit around **-10 to -1 dB** (ambient line-in with no record playing sits near -17 dB; the silence floor is -15 dB). If `level_db` during music is below -15 dB the input gain is too low — check your pre-amp output and the UFO202's input level switch.
+**Sanity check:** `level_db` during music should sit around **-20 dB** (ambient line-in with no record playing sits near -41 dB; the silence floor is -34 dB and the music threshold is -30 dB). If `level_db` during music is below -30 dB, or no heartbeats print at all, the input gain is too low — check your pre-amp output and the UFO202's input level switch.
 
 Ctrl+C to stop.
 
@@ -144,7 +159,7 @@ systemctl is-active nowplaying-orchestrator
 journalctl -u nowplaying-orchestrator -n 30 --no-pager
 ```
 
-Expected: `active`, with recent log lines including `capture started: ... silence_db=-15.0 heartbeat_s=15.0`.
+Expected: `active`, with recent log lines including `capture started: ... silence_db=-34.0 heartbeat_s=15.0`.
 
 ### Boot timing and USB audio
 
@@ -177,7 +192,7 @@ http://nowplaying-pi.local:8080/
 If the kiosk display is attached to the Pi and a graphical session is running, Chromium auto-launches against this URL on boot (the kiosk unit waits for `/health` before opening the browser, so no race condition with the orchestrator).
 
 - **When a record plays:** the display updates within ~15 seconds (one heartbeat).
-- **When the record stops:** the display reverts to a clock after ~50 seconds (5s silence detection + 45s idle timer).
+- **When the record stops:** the display reverts to a clock after ~2 minutes (5s silence detection + 120s idle timer).
 
 ## Optional: Waveshare 13.3" FHD AMOLED Touch Display
 
@@ -335,7 +350,7 @@ When Shazam misses on a record you've already played a few times, the orchestrat
 
    ```bash
    cd ~/now-playing/pi
-   uv sync --extra audio --extra discogs --extra shazam --extra fingerprint
+   uv sync --locked --extra audio --extra discogs --extra shazam --extra fingerprint
    sudo systemctl restart nowplaying-orchestrator
    ```
 
@@ -378,7 +393,7 @@ See `.claude/skills/README.md` for the full list. For annotated journalctl excer
 | Kiosk shows clock while record plays | Audio chain not detected | Re-run Step 6 manually |
 | Kiosk shows wrong track | Shazam false positive, or stale `last_vinyl` | `sudo systemctl restart nowplaying-orchestrator` |
 | Sonos zone not discovered | Wrong zone name, or VLAN routing | Confirm `SONOS_ZONE_NAME` matches the app exactly |
-| `level_db` < -15 dB during music | Input gain too low (at or below the silence floor) | Check pre-amp, UFO202 input switch |
+| `level_db` < -30 dB during music, or no heartbeats | Input gain too low (below the -30 dB music threshold; under -34 dB counts as silence) | Check pre-amp, UFO202 input switch |
 
 ## What ships with the repo
 

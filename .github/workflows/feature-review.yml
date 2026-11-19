@@ -21,13 +21,17 @@ jobs:
 
       - name: Load review prompt
         id: prompt
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
         run: |
           {
             echo 'value<<PROMPT_EOF'
             cat .github/review-prompt-plan.md
             echo ''
-            echo "Review PR #${{ github.event.pull_request.number }} in this repo."
-            echo "The PR branch is ${{ github.head_ref }} targeting ${{ github.base_ref }}."
+            echo "Review PR #${PR_NUMBER} in this repo."
+            echo "The PR branch is ${HEAD_REF} targeting ${BASE_REF}."
             echo 'PROMPT_EOF'
           } >> "$GITHUB_OUTPUT"
 
@@ -63,13 +67,17 @@ jobs:
 
       - name: Load review prompt
         id: prompt
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
         run: |
           {
             echo 'value<<PROMPT_EOF'
             cat .github/review-prompt-impl.md
             echo ''
-            echo "Review PR #${{ github.event.pull_request.number }} in this repo."
-            echo "The PR branch is ${{ github.head_ref }} targeting ${{ github.base_ref }}."
+            echo "Review PR #${PR_NUMBER} in this repo."
+            echo "The PR branch is ${HEAD_REF} targeting ${BASE_REF}."
             echo 'PROMPT_EOF'
           } >> "$GITHUB_OUTPUT"
 

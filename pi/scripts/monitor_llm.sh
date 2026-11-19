@@ -2,8 +2,8 @@
 # Live monitor for LLM-assist activity on the Pi.
 #
 # Tails journalctl on the orchestrator and color-codes the lines that
-# matter for the four LLM hooks (judge_shazam_result, judge_advance,
-# decide_track_change, judge_track_guess) plus the orchestrator context
+# matter for the LLM hooks (judge_shazam_result, judge_advance,
+# decide_track_change), the track-guess window estimate, plus the orchestrator context
 # (heartbeats, publishes, sonos events) so it's possible to correlate
 # a hook firing with the audio state that triggered it.
 #
@@ -40,7 +40,7 @@ ${C_BOOT}── monitor_llm — Now Playing LLM-assist live tail ─────
   ${C_SHAZ}shazam-relevance:${C_RESET}    judge_shazam_result verdicts
   ${C_ADV}advance-track:${C_RESET}        judge_advance verdicts
   ${C_TC}track-change-llm:${C_RESET}     decide_track_change verdicts
-  ${C_GUESS}track-guess:${C_RESET}          judge_track_guess verdicts + heuristic fallback
+  ${C_GUESS}track-guess:${C_RESET}          BEST GUESS window estimate (no LLM call)
   ${C_FAIL}llm: ... call failed:${C_RESET} API errors / timeouts / parse failures
   ${C_CTX}heartbeat / publish / sonos:${C_RESET} orchestrator context (grey)
   Ctrl-C to stop.

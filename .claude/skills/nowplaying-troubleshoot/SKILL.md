@@ -34,7 +34,7 @@ ls /usr/bin/chromium
 ## Step 3: Common failure modes and fixes
 
 ### "ModuleNotFoundError: No module named '<dep>'"
-The orchestrator is using system Python instead of the venv. Check the systemd unit's `ExecStart` points at `<home>/now-playing/pi/.venv/bin/python`, then re-run `uv sync` inside `pi/`.
+The orchestrator is using system Python instead of the venv. Check the systemd unit's `ExecStart` points at `<home>/now-playing/pi/.venv/bin/python`, then re-run `uv sync --locked` with the same `--extra` flags you installed with, inside `pi/`.
 
 ### "UFO202 (CODEC) not found" / capture_proto.py exit 1
 USB device not recognized or not under that name. Re-check with:
@@ -70,7 +70,7 @@ journalctl -u nowplaying-orchestrator --since "1 hour ago" --no-pager | grep "ca
 ### Discogs sync hangs or fails
 Network issue, bad token, or rate-limited. Verify auth:
 ```bash
-curl -fsS "https://api.discogs.com/users/$DISCOGS_USERNAME" \
+curl -fsS "https://api.discogs.com/oauth/identity" \
   -H "Authorization: Discogs token=$DISCOGS_TOKEN" | head -20
 ```
 

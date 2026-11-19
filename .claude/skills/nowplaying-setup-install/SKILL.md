@@ -28,7 +28,7 @@ ssh nowplaying-pi 'cd ~/now-playing/pi && curl -LsSf https://astral.sh/uv/instal
 That installs `uv` to `~/.local/bin/uv`. Then:
 
 ```bash
-ssh nowplaying-pi 'cd ~/now-playing/pi && ~/.local/bin/uv sync --extra audio --extra discogs --extra shazam'
+ssh nowplaying-pi 'cd ~/now-playing/pi && ~/.local/bin/uv sync --locked --extra audio --extra discogs --extra shazam'
 ```
 
 This creates `pi/.venv/` and installs the three required extra groups:
@@ -41,6 +41,25 @@ This creates `pi/.venv/` and installs the three required extra groups:
 
 ```bash
 ssh nowplaying-pi 'test -x ~/now-playing/pi/.venv/bin/python && echo OK'
+```
+
+### Build the kiosk bundle and copy it to the Pi
+
+The Pi has no Node toolchain and `kiosk/dist/` is gitignored, so the clone on the Pi has no frontend until a bundle is copied over. Build on the Mac (Node and pnpm required), from a clone of the same commit:
+
+```bash
+cd <your clone>/kiosk
+pnpm install --frozen-lockfile
+pnpm build
+rsync -az --delete dist/ nowplaying-pi:~/now-playing/kiosk/dist/
+```
+
+The orchestrator serves `kiosk/dist/` off disk; without it `http://nowplaying-pi.local:8080/` answers `kiosk/dist not built yet` with HTTP 503.
+
+**Verify the bundle:**
+
+```bash
+ssh nowplaying-pi 'test -f ~/now-playing/kiosk/dist/index.html && echo OK'
 ```
 
 ## Step 3: Identify the USB audio device
@@ -123,11 +142,11 @@ ssh nowplaying-pi 'cd ~/now-playing/pi && .venv/bin/python scripts/capture_proto
 Drop a needle on a record. Within ~15 seconds, expect JSON lines on stdout:
 
 ```
-{"ts":"...","event":"started","device":"USB Audio CODEC: ...","silence_db":-45.0,"heartbeat_s":15.0}
-{"ts":"...","event":"heartbeat","level_db":-22.4,"clip":"...","clip_seconds":10.0}
+{"ts":"...","event":"started","device":"USB Audio CODEC: ...","silence_db":-34.0,"heartbeat_s":15.0}
+{"ts":"...","event":"heartbeat","level_db":-22.4,"clip":"...","clip_seconds":12.0}
 ```
 
-**Sanity check on `level_db`:** during music, it should average around **-25 to -15 dB**. Below -35 dB means the input gain is too low — check the preamp output and the UFO202's input level switch. Above -5 dB means clipping risk — back off the gain.
+**Sanity check on `level_db`:** during music, it should average around **-25 to -15 dB**. Below -30 dB (the music threshold) means the input gain is too low, and below -34 dB the capture gate treats the input as silence and prints no heartbeats — check the preamp output and the UFO202's input level switch. Above -5 dB means clipping risk — back off the gain.
 
 Ctrl+C to stop.
 
@@ -137,6 +156,7 @@ Ctrl+C to stop.
 - `~/now-playing/pi/.env` contains a real `DISCOGS_TOKEN` and the correct `SONOS_ZONE_NAME`.
 - `~/now-playing/pi/data/discogs.sqlite` exists and has rows in `releases`.
 - `capture_proto.py` printed `heartbeat` events with `level_db` between roughly -30 and -10 while music played.
+- `~/now-playing/kiosk/dist/index.html` exists on the Pi.
 
 ## Next
 
@@ -147,4 +167,4 @@ Ask Claude to **"install the services"** → `nowplaying-setup-services`.
 - `uv sync` fails on a dependency → `nowplaying-troubleshoot` (most common cause: missing system library, e.g. `portaudio19-dev`).
 - `sounddevice.query_devices()` doesn't list the UFO202 → back to `nowplaying-setup-hardware` to check the USB cable / port.
 - Discogs sync fails with auth error → back to `nowplaying-setup-accounts` to regenerate the token.
-- `capture_proto.py` prints heartbeats but `level_db` is silent (<-50 dB) while music plays → check the splitter wiring; see `nowplaying-setup-hardware`.
+- `capture_proto.py` prints `started` and then a `silent` event but no heartbeats while music plays (the level is under the -34 dB silence floor) → check the splitter wiring; see `nowplaying-setup-hardware`.

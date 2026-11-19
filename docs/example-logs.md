@@ -22,17 +22,17 @@ nowplaying.api            publish: clients=3 source=vinyl title='Sergeant Polite
 Every 15s heartbeat re-confirms the same track. The broadcaster sees the payload is content-identical to the last one and suppresses the publish, so the kiosk never sees a duplicate update.
 
 ```
-nowplaying.vinyl          capture heartbeat: clip=pi/data/clips/1779284420_heartbeat.wav level_db=-0.9
+nowplaying.vinyl          capture heartbeat: clip=pi/data/clips/1779284420_heartbeat.wav level_db=-21.3
 nowplaying.vinyl.ratelimit shazam: call 25 (4 in last 60s)
 nowplaying.main           recognize: method=shazam release_id=31427573 artist=Failure title=Sergeant Politeness
 nowplaying.api            publish: redundant (skipped) reason=content-identical source=vinyl title='Sergeant Politeness'
 
-nowplaying.vinyl          capture heartbeat: clip=pi/data/clips/1779284435_heartbeat.wav level_db=-0.6
+nowplaying.vinyl          capture heartbeat: clip=pi/data/clips/1779284435_heartbeat.wav level_db=-20.8
 nowplaying.main           recognize: method=shazam release_id=31427573 artist=Failure title=Sergeant Politeness
 nowplaying.api            publish: redundant (skipped) reason=content-identical source=vinyl title='Sergeant Politeness'
 ```
 
-The `level_db` field is the rolling RMS of the input — useful for sanity-checking the audio chain. During music it sits around -10 to -1 dB; below -15 dB (the silence floor) usually means the pre-amp output is too low or the line-in cable is loose.
+The `level_db` field is the rolling RMS of the input — useful for sanity-checking the audio chain. During music it sits around -20 dB; below -30 dB (the music threshold; -34 dB is the silence floor) usually means the pre-amp output is too low or the line-in cable is loose.
 
 ## Sonos UPnP subscription renewal
 
@@ -64,13 +64,13 @@ The published payload carries `match_method: "predicted"` and `predicted: true` 
 
 ## State decay → NEEDS_ID
 
-If predicted advancement runs out of confidence — say, the predicted track also can't be Shazam-confirmed and the locked album's last real recognition is more than 45 seconds old — the orchestrator falls through to NEEDS_ID and the kiosk shows the "couldn't identify" screen with a manual-pick link.
+If predicted advancement runs out of confidence — say, the predicted track also can't be Shazam-confirmed and the track's expected play time is up (or, when the track's duration is unknown, the last real recognition is more than 45 seconds old) — the orchestrator falls through to NEEDS_ID and the kiosk shows the "couldn't identify" screen with a manual-pick link.
 
 ```
 nowplaying.main           recognize: method=unmatched release_id=None artist=None title=None
 nowplaying.main           fingerprint: no match for release=31427573
-nowplaying.main           state-decay: last_vinyl='Sergeant Politeness' age=45.5s > 45s — forcing needs-id
-nowplaying.main           NEEDS_ID: level_db=-0.7 prev=Sergeant Politeness
+nowplaying.main           state-decay: last_vinyl='Sergeant Politeness' past expected track end (stamp age=275.6s) — forcing needs-id
+nowplaying.main           NEEDS_ID: level_db=-23.3 prev=Sergeant Politeness
 nowplaying.api            publish: clients=3 source=vinyl title=None release_id=None
 ```
 
@@ -90,4 +90,4 @@ journalctl -u nowplaying-orchestrator -f | grep "capture heartbeat"
 journalctl -u nowplaying-orchestrator -f | grep sonos.listener
 ```
 
-See [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) for the file:line citations behind each emitter.
+See [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) for the module and symbol behind each emitter.

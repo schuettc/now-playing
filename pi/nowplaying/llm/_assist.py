@@ -271,8 +271,8 @@ class LLMAssist:
         ERROR_WARN_INTERVAL_S. Prevents heartbeat-cadence log spam when
         the API key is invalid or network is persistently down."""
         now = time.monotonic()
-        last = self._last_warned.get(type(exc), 0.0)
-        if now - last < ERROR_WARN_INTERVAL_S:
+        last = self._last_warned.get(type(exc))
+        if last is not None and now - last < ERROR_WARN_INTERVAL_S:
             return
         self._last_warned[type(exc)] = now
         log.warning("llm: %s call failed: %r (suppressing repeats for %.0fs)",

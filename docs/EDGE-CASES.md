@@ -104,9 +104,9 @@ By the third play, an off-Discogs record behaves exactly like a synced one.
 
 ## Ambient noise crossing the silence floor
 
-**What happens:** You're not playing anything but the kiosk briefly flashes from the clock to "Identifying record" then back. Recorded heartbeats show audio at -14.9 to -15.6 dB — right at the silence threshold.
+**What happens:** You're not playing anything but the kiosk briefly flashes from the clock to "Identifying record" then back. Recorded heartbeats show audio around -34 dB — right at the silence threshold.
 
-**How the kiosk handles it:** the `SHAZAM_ONLY_MIN_LEVEL_DB` gate sits at -12 dB, so threshold-edge ambient noise (-14 to -16 dB on UFO202+preamp) doesn't count as "music level" and won't trigger a NEEDS_ID publish.
+**How the kiosk handles it:** the music-level gate (`MUSIC_DB` in `pi/nowplaying/vinyl/levels.py`) sits at -30 dB, 4 dB above the -34 dB silence floor, so noise at the edge of the silence floor doesn't count as "music level" and won't trigger a NEEDS_ID publish. The idle noise floor on the reference chain is around -41 dB.
 
 If you still see flapping, your preamp ambient is louder than expected — open an issue with a recent `journalctl -u nowplaying-orchestrator | grep capture` slice.
 

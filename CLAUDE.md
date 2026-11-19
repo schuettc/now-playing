@@ -6,7 +6,7 @@ Project-level instructions for AI assistants working in this repository.
 
 A Raspberry Pi kiosk that displays "now playing" info for a vinyl turntable, driven by Sonos line-in audio piped through a USB capture device, identified via ShazamIO, enriched against the user's Discogs collection when available, or auto-discovered via MusicBrainz when the album isn't in their collection. Two services:
 
-- **`pi/`** — Python orchestrator (FastAPI + asyncio). Owns audio capture, recognition cascade, Sonos integration, WebSocket broadcast.
+- **`pi/`** — Python orchestrator (aiohttp + asyncio). Owns audio capture, recognition cascade, Sonos integration, WebSocket broadcast.
 - **`kiosk/`** — React + Vite frontend. Renders the now-playing screen.
 
 See [README.md](README.md) for the user-facing overview and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the technical reference.
@@ -22,13 +22,15 @@ This repo ships project-local Claude Code skills in `.claude/skills/`. When the 
 | `nowplaying-diagnose` | Asking what the system is doing right now (read-only) |
 | `nowplaying-status` | Asking what's currently playing |
 
+`nowplaying-setup` hands off to the `nowplaying-setup-*` phase skills (hardware, pi, sonos, accounts, install, services, and the optional lastfm); `.claude/skills/README.md` lists all eleven.
+
 If the user's request fits one of these, the skill content has the runbook — follow it.
 
 ## Conventions
 
 - **The venv is at `pi/.venv/`**, not the repo root. Invoke its binaries directly.
-- **Testing:** `pi/.venv/bin/pytest pi/tests/` for backend; `cd kiosk && npm test` for frontend. Both must be green before merge.
-- **Linting / dead-code:** pre-commit hooks run `skylos` (dead code), `fallow` (complexity), `ruff` (style). Don't bypass with `--no-verify`. If a hook fires, fix the underlying issue or add a suppression with an inline rationale on the same line.
+- **Testing:** `pi/.venv/bin/pytest pi/tests/` for backend; `cd kiosk && pnpm test` for frontend. Both must be green before merge; the `Tests` workflow runs both on every pull request.
+- **Linting / dead-code:** pre-commit hooks run `skylos` (staged-file regression scan on Python and TOML) and `fallow` (dead code and complexity in the kiosk). `ruff` is a dev dependency in `pi/pyproject.toml` but no hook runs it. Don't bypass with `--no-verify`. If a hook fires, fix the underlying issue or add a suppression with an inline rationale on the same line.
 - **Suppressions:** every `# skylos: ignore`, `# fallow-ignore`, `# noqa`, `# type: ignore` must carry an inline rationale explaining why the rule's *application* (not its finding) is wrong here. The canonical form is an em-dash suffix on the same line: `# skylos: ignore SKY-D216 — url built from hardcoded constant; host is not user-controlled`. The `# Why:` prefix form is also accepted. Neither form may be omitted.
 - **Commits:** never use `--no-verify`, never amend already-pushed commits, never add `Co-Authored-By` attribution.
 - **No per-user developer keys.** This is a public repo: features must work without anyone registering for an API key. Prefer free, keyless sources (MusicBrainz by ISRC, Shazam's own fields). MusicBrainz calls go through the 1 req/s semaphore in `pi/nowplaying/art_cache.py`.
@@ -45,7 +47,7 @@ Before a live verify, prove every screen the user will look at runs the new bund
 
 ## Deploying to the Pi
 
-The Pi has no Node, so build the kiosk on the Mac (`cd kiosk && npm run build`), then `rsync -az --delete kiosk/dist/ nowplaying-pi:~/now-playing/kiosk/dist/` and `sudo systemctl restart nowplaying-kiosk` on the Pi. The orchestrator serves `dist` off disk, so a bundle swap needs no orchestrator restart.
+The Pi has no Node, so build the kiosk on the Mac (`cd kiosk && pnpm build`), then `rsync -az --delete kiosk/dist/ nowplaying-pi:~/now-playing/kiosk/dist/` and `sudo systemctl restart nowplaying-kiosk` on the Pi. The orchestrator serves `dist` off disk, so a bundle swap needs no orchestrator restart.
 
 After any `git reset` or checkout on the Pi, re-rsync `dist`: `index.html` is untracked and gets deleted.
 
