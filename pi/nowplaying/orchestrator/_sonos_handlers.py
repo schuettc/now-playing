@@ -1,6 +1,6 @@
 """SonosHandlersMixin — Sonos and capture event handlers.
 
-Contains: adopt_sonos_coord, on_sonos_event, _handle_sticky_idle, _apply_source_transition,
+Contains: adopt_sonos_coord, on_sonos_event, _process_sonos_event, _handle_sticky_idle, _apply_source_transition,
 _maybe_cancel_idle_on_resume, _reconcile_capture_emit,
 _recover_unmatched_from_cache, _reset_for_non_idle_source,
 _maybe_arm_streaming_idle, on_capture_state, _handle_capture_silent,
@@ -44,6 +44,15 @@ class SonosHandlersMixin:
         self.sonos_coord = coord
 
     async def on_sonos_event(self, ev: dict) -> None:
+        """Handle one Sonos event (a NOTIFY, an enrich-republish or a
+        repoll tick). Each caller runs in its own task, so events are
+        taken one at a time in arrival order: the queue poll below awaits,
+        and an older event finishing late must not publish over a newer one.
+        """
+        async with self.state.sonos_event_lock:
+            await self._process_sonos_event(ev)
+
+    async def _process_sonos_event(self, ev: dict) -> None:
         state = self.state
         bcast = self.bcast
         try:

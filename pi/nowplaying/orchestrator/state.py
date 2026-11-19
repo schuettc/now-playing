@@ -50,6 +50,8 @@ class State:  # skylos: ignore SKY-Q501 — State is intentionally the orchestra
         self.sonos_source: str = "unknown"
         self.sonos_state: str = "STOPPED"
         self.sonos_has_metadata: bool = False
+        # Held for the whole of on_sonos_event; see its docstring.
+        self.sonos_event_lock = asyncio.Lock()
 
     def _init_idle(self) -> None:
         self.idle_task: asyncio.Task | None = None
