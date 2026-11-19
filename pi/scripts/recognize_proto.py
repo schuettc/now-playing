@@ -315,7 +315,8 @@ def _resolve_track_position(
 def _schedule_discovery(shazam_result: dict) -> None:
     """Fire-and-forget background MB lookup. Try ISRC first (strongest
     signal), fall back to (artist, album). On hit, persist into
-    discovered.sqlite. Negative cache on miss is handled inside
+    discovered.sqlite under this Shazam (artist, album), which the next
+    heartbeat looks up. Negative cache on miss is handled inside
     lookup_by_artist_album. Per-(artist, album) lock prevents duplicate
     in-flight requests.
     """
@@ -344,7 +345,7 @@ async def _run_discovery(
     try:
         release = None
         if isrc:
-            release = await musicbrainz_lookup.lookup_by_isrc(isrc)
+            release = await musicbrainz_lookup.lookup_by_isrc(isrc, album)
         if release is None:
             release = await musicbrainz_lookup.lookup_by_artist_album(
                 artist, album,
@@ -356,7 +357,7 @@ async def _run_discovery(
                 file=sys.stderr,
             )
             return
-        await musicbrainz_lookup.persist(release)
+        await musicbrainz_lookup.persist(release, lookup_key=(artist, album))
         print(  # noqa: T201
             f"discovery: discovered release "
             f"mbid={release.get('mbid')} "

@@ -39,6 +39,12 @@ CREATE TABLE IF NOT EXISTS negative_lookups (
     stamped_at INTEGER NOT NULL,
     PRIMARY KEY (artist_norm, album_norm)
 );
+CREATE TABLE IF NOT EXISTS release_aliases (
+    artist_norm TEXT NOT NULL,
+    album_norm TEXT NOT NULL,
+    mbid TEXT NOT NULL,
+    PRIMARY KEY (artist_norm, album_norm)
+);
 CREATE TABLE IF NOT EXISTS fp_refs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     mbid TEXT NOT NULL,
