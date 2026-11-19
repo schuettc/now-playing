@@ -26,11 +26,10 @@ describe('telemetry.track', () => {
     expect(spy).toHaveBeenCalledWith('[telemetry]', 'identify_pin_timeout', {});
   });
 
-  it('accepts all 11 event names without TS errors', () => {
+  it('accepts all 10 event names without TS errors', () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
     track('identify_guess_shown');
     track('identify_guess_confirm');
-    track('identify_guess_reject');
     track('identify_guess_pick_another');
     track('identify_guess_timeout');
     track('identify_tracklist_tap');

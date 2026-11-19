@@ -64,10 +64,8 @@ function WikipediaLink() {
  *     ContextPanel that used to live in the left column).
  *   - Lower-RIGHT: "View on Discogs ↗" when a release_id is locked.
  *
- * The previous centered "Wrong track? / Wrong album?" cluster was
- * retired by `identify-learning-chip-undo-strip` — `UndoStrip` is
- * now the single "wrong track" affordance, anchored under the
- * StatusPill at top-right.
+ * "Wrong track" and "wrong album" corrections are not here; they are
+ * reached through the "Something wrong?" picker at top-right.
  */
 export function CornerLinks(props: Props) {
   const view = buildCornerLinks(props);

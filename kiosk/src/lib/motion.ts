@@ -18,10 +18,8 @@ export const MOTION = {
   chipIn: 0.32,
   /** Post-tap green flash duration on tracklist row, ms. */
   confirmFlashMs: 1400,
-  /** GuessConfirm 60s auto-dismiss, ms. */
+  /** GuessConfirm auto-dismiss when the guess carries no `expires_in_s`, ms. */
   guessTimeoutMs: 60_000,
-  /** UndoStrip transient mode auto-hide, ms. */
-  undoTransientMs: 8_000,
   /** LearningChip auto-dismiss, ms. */
   learningChipMs: 3_500,
   /** identifying → needs-id timeout. Covers ~3 heartbeats (3 × 15s),
