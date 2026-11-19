@@ -16,7 +16,7 @@ function formatPlayCount(count: number): string {
  * current session window (same album, played < SESSION_WINDOW_S ago).
  */
 function formatLastLabel(
-  releaseId: number | undefined,
+  releaseId: number | null | undefined,
   lastPlayedAt: number | null,
   statsReleaseId: number | undefined,
   nowS: number,
@@ -56,7 +56,7 @@ export function StatsCaption() {
 
   const playLabel = formatPlayCount(stats.play_count);
   const lastLabel = formatLastLabel(
-    rid ?? undefined,
+    rid,
     stats.last_played_at,
     stats.release_id,
     Date.now() / 1000,

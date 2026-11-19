@@ -67,7 +67,7 @@ export function TrackLayout({
         <div className="relative">
           <AlbumArt
             src={bustedUrl}
-            alt={data.album ?? data.title ?? undefined}
+            alt={data.album ?? data.title}
             identity={`${artId}#${artCacheBust}`}
             dim={isPaused}
           />

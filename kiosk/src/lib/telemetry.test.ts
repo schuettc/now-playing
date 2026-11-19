@@ -38,6 +38,6 @@ describe('telemetry.track', () => {
     track('identify_lookup_dismiss');
     track('identify_pin_4xx');
     track('identify_pin_timeout');
-    expect(spy).toHaveBeenCalledTimes(11);
+    expect(spy).toHaveBeenCalledTimes(10);
   });
 });

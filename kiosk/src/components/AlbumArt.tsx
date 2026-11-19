@@ -5,7 +5,7 @@ import { useCrossfadePair } from './useCrossfadePair';
 
 interface Props {
   src?: string;
-  alt?: string;
+  alt?: string | null;
   identity: string;
   dim?: boolean;
 }
