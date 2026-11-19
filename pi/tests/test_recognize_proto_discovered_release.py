@@ -189,13 +189,13 @@ def test_run_discovery_persists_on_isrc_hit(monkeypatch):
     success line."""
     persisted: list[dict] = []
 
-    async def _fake_isrc(isrc, **k):
+    async def _fake_isrc(isrc, album, **k):
         return {
             "mbid": "mb-1", "artist": "A", "album": "B",
             "year": 2000, "tracks": [],
         }
 
-    async def _fake_persist(rel):
+    async def _fake_persist(rel, **k):
         persisted.append(rel)
 
     monkeypatch.setattr(
@@ -219,7 +219,7 @@ def test_run_discovery_falls_back_to_artist_album(monkeypatch):
     called = {"isrc": 0, "aa": 0}
     persisted: list[dict] = []
 
-    async def _fake_isrc(isrc, **k):
+    async def _fake_isrc(isrc, album, **k):
         called["isrc"] += 1
         return None
 
@@ -230,7 +230,7 @@ def test_run_discovery_falls_back_to_artist_album(monkeypatch):
             "album": album, "tracks": [],
         }
 
-    async def _fake_persist(rel):
+    async def _fake_persist(rel, **k):
         persisted.append(rel)
 
     monkeypatch.setattr(

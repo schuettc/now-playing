@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 import recognize_proto
 
-from nowplaying.discogs import catalog as discogs_catalog
+from nowplaying import catalog as catalog_dispatch
 from nowplaying.orchestrator.pin import _confidence_for_remaining
 
 # Match methods that represent a *confirmed* now-playing track (not a guess).
@@ -66,11 +66,13 @@ def _advance_predicted_position(
     """Advance one position forward on the same side.
 
     Args:
-      tracks: A release's tracklist (from ``discogs_catalog.get_release``),
+      tracks: A release's tracklist (from ``catalog_dispatch.get_release``),
         a list of ``{position, side, title, duration_seconds}`` dicts in
         physical insertion order (or sorted; we use the order given).
       current: The current ``predicted_position`` dict
-        ``{release_id, side, track_position, index_in_side}``.
+        ``{release_id, release_mbid, side, track_position,
+        index_in_side}``; a discovered release has ``release_id`` None
+        and is identified by ``release_mbid``.
 
     Returns:
       A new ``predicted_position`` dict for the next track on the same
@@ -99,6 +101,7 @@ def _advance_predicted_position(
     nxt = side_tracks[next_idx]
     return {
         "release_id": current["release_id"],
+        "release_mbid": current.get("release_mbid"),
         "side": side,
         "track_position": nxt["position"],
         "index_in_side": next_idx,
@@ -112,11 +115,15 @@ def _build_predicted_payload(
 
     Merges album-level fields from the confirmed ``last_vinyl`` lock
     (artist, album, art, label, year, tracklist) with track-level fields
-    looked up from the Discogs catalog for the predicted position
-    (title, side, track_position). Returns ``None`` if the release or
+    looked up from the Discogs catalog, or the discovered store for an
+    MBID-only release, for the predicted position (title, side,
+    track_position). Returns ``None`` if the release or
     matching track can't be found — caller falls back to NEEDS_ID.
     """
-    release = discogs_catalog.get_release(predicted["release_id"])
+    release = catalog_dispatch.get_release(
+        release_id=predicted["release_id"],
+        mbid=predicted.get("release_mbid"),
+    )
     if release is None:
         return None
     target_pos = predicted["track_position"]
@@ -147,4 +154,6 @@ def _build_predicted_payload(
         # scrobble path can apply the 50%-of-duration rule.
         "duration_seconds": track.get("duration_seconds"),
     }
+    if last_vinyl.get("release_mbid"):
+        payload["release_mbid"] = last_vinyl["release_mbid"]
     return payload

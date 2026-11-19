@@ -3,7 +3,8 @@
 Two entry points used by the recognize cascade:
 
 * :func:`lookup_by_isrc` — strongest signal when Shazam returned one;
-  walks recording → releases and takes the first non-bootleg result.
+  walks recording → releases and takes the first non-bootleg release
+  titled like the Shazam album.
 * :func:`lookup_by_artist_album` — fallback when no ISRC. Wraps the
   existing :func:`coverart.fetch_release_mbid` + track-count-aware
   resolver and :func:`coverart.fetch_release_recordings`.
@@ -11,7 +12,8 @@ Two entry points used by the recognize cascade:
 Both return ``{"mbid", "artist", "album", "year", "tracks"}`` or ``None``.
 
 :func:`persist` writes the release + tracks into ``discovered.sqlite``
-idempotently.
+idempotently, with the Shazam (artist, album) that led to it, which is
+what :func:`find_discovered_release_by_artist_album` looks up.
 """
 from __future__ import annotations
 
@@ -24,8 +26,13 @@ from typing import Optional
 
 import aiohttp
 
-from nowplaying import coverart
-from nowplaying.discovery._normalize import normalize_album, normalize_artist
+from nowplaying import art_cache, coverart
+from nowplaying.coverart import Unreachable
+from nowplaying.discovery._normalize import (
+    albums_match,
+    normalize_album,
+    normalize_artist,
+)
 from nowplaying.discovery.schema import (
     DISCOVERED_DB_PATH,
     open_ro,
@@ -38,27 +45,10 @@ log = logging.getLogger("nowplaying.discovery")
 USER_AGENT = coverart.USER_AGENT
 _NEGATIVE_TTL_S = 7 * 24 * 3600
 
-# Serialises recording_length_by_isrc HTTP calls to honour MusicBrainz's
-# 1 req/s rate limit. Lazy-initialised (same pattern as art_cache._get_semaphore)
-# to avoid creating the Semaphore at import time when no event loop is running.
-_mb_rate_limit: asyncio.Semaphore | None = None
-
-
-def _get_mb_rate_limit() -> asyncio.Semaphore:
-    global _mb_rate_limit
-    if _mb_rate_limit is None:
-        _mb_rate_limit = asyncio.Semaphore(1)
-    return _mb_rate_limit
-
 # Sides A..Z by medium ordinal; single-medium vinyl releases come out
 # as A1, A2, ... — downstream consumers treat the tracklist opaquely,
 # so this is good enough for side-timer / BEST GUESS rendering.
 _SIDE_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-
-
-class Unreachable(Exception):
-    """MusicBrainz gave no answer (transport error, or a status other than
-    200/404). Not a miss: nothing may be negative-cached on it."""
 
 
 def _norm(s: str) -> str:
@@ -181,13 +171,12 @@ async def recording_length_by_isrc(isrc: str, *, timeout_s: float = 15.0) -> int
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
     try:
         timeout = aiohttp.ClientTimeout(total=timeout_s)
-        async with _get_mb_rate_limit():
+        async with art_cache.musicbrainz_slot():
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(url, headers=headers) as resp:  # skylos: ignore SKY-D216 — url built from hardcoded musicbrainz.org template; only ISRC interpolated via urllib.quote
                     if resp.status != 200:
                         raise Unreachable(f"status={resp.status}")
                     data = await resp.json()
-            await asyncio.sleep(1.0)  # enforce 1 req/s inside the semaphore
     except Unreachable:
         raise
     except Exception as e:  # noqa: BLE001 — network/parse: not an answer
@@ -197,12 +186,14 @@ async def recording_length_by_isrc(isrc: str, *, timeout_s: float = 15.0) -> int
 
 async def lookup_by_isrc(
     isrc: str,
+    album: str,
     *,
     timeout_s: float = 15.0,
 ) -> Optional[dict]:
-    """Look up a release by ISRC. Walks ``recording?query=isrc:<isrc>``,
-    then for the top recording walks its releases and picks the first
-    non-bootleg release. Fetches that release's full media/tracks.
+    """Look up a release by ISRC. Walks ``recording?query=isrc:<isrc>``
+    and picks the first non-bootleg release of those recordings that is
+    titled like ``album`` (the Shazam album). Fetches that release's full
+    media/tracks.
 
     Returns ``{"mbid", "artist", "album", "year", "tracks"}`` or None.
     """
@@ -216,20 +207,21 @@ async def lookup_by_isrc(
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
     timeout = aiohttp.ClientTimeout(total=timeout_s)
     try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url, headers=headers) as resp:  # skylos: ignore SKY-D216 — url built from hardcoded musicbrainz.org template; only ISRC interpolated through urllib.quote
-                if resp.status != 200:
-                    log.info(
-                        "discovery: isrc=%s lookup status=%d",
-                        isrc, resp.status,
-                    )
-                    return None
-                data = await resp.json()
+        async with art_cache.musicbrainz_slot():
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url, headers=headers) as resp:  # skylos: ignore SKY-D216 — url built from hardcoded musicbrainz.org template; only ISRC interpolated through urllib.quote
+                    if resp.status != 200:
+                        log.info(
+                            "discovery: isrc=%s lookup status=%d",
+                            isrc, resp.status,
+                        )
+                        return None
+                    data = await resp.json()
     except (aiohttp.ClientError, asyncio.TimeoutError) as e:
         log.info("discovery: isrc=%s lookup failed: %r", isrc, e)
         return None
 
-    release_mbid = _pick_release_from_recording_search(data)
+    release_mbid = _pick_release_from_recording_search(data, album)
     if not release_mbid:
         return None
     try:
@@ -238,15 +230,21 @@ async def lookup_by_isrc(
         return None
 
 
-def _pick_release_from_recording_search(data: dict) -> Optional[str]:
+def _pick_release_from_recording_search(
+    data: dict, album: str,
+) -> Optional[str]:
     """Walk a ``recording?query=isrc:...`` response and pull the first
-    non-bootleg release MBID. Returns None when no usable release exists.
+    non-bootleg release MBID titled like ``album``. A recording's other
+    releases (the single, a compilation) carry a different tracklist.
+    Returns None when no such release exists.
     """
     recordings = data.get("recordings") or []
     for rec in recordings:
         for rel in rec.get("releases") or []:
             status = (rel.get("status") or "").lower()
             if status == "bootleg":
+                continue
+            if not albums_match(rel.get("title") or "", album):
                 continue
             rid = rel.get("id")
             if rid:
@@ -270,17 +268,18 @@ async def _fetch_release_full(
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
     timeout = aiohttp.ClientTimeout(total=timeout_s)
     try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url, headers=headers) as resp:  # skylos: ignore SKY-D216 — url built from hardcoded musicbrainz.org template; only MBID interpolated
-                if resp.status != 200:
-                    log.info(
-                        "discovery: release %s fetch status=%d",
-                        release_mbid, resp.status,
-                    )
-                    if resp.status == 404:
-                        return None
-                    raise Unreachable(f"status={resp.status}")
-                data = await resp.json()
+        async with art_cache.musicbrainz_slot():
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url, headers=headers) as resp:  # skylos: ignore SKY-D216 — url built from hardcoded musicbrainz.org template; only MBID interpolated
+                    if resp.status != 200:
+                        log.info(
+                            "discovery: release %s fetch status=%d",
+                            release_mbid, resp.status,
+                        )
+                        if resp.status == 404:
+                            return None
+                        raise Unreachable(f"status={resp.status}")
+                    data = await resp.json()
     except (aiohttp.ClientError, asyncio.TimeoutError) as e:
         log.info(
             "discovery: release %s fetch failed: %r", release_mbid, e,
@@ -335,8 +334,8 @@ async def lookup_by_artist_album(
     fetches the full release for tracklist + durations.
 
     Returns the same shape as :func:`lookup_by_isrc` or None. A miss is
-    negative-cached for ``_NEGATIVE_TTL_S``; a release fetch that could
-    not reach MusicBrainz is not.
+    negative-cached for ``_NEGATIVE_TTL_S``; a search or release fetch
+    that could not reach MusicBrainz is not.
     """
     if not artist or not album:
         return None
@@ -347,10 +346,17 @@ async def lookup_by_artist_album(
         )
         return None
 
-    release_mbid = await _resolve_artist_album_mbid(
-        artist, album, track_count_hint=track_count_hint,
-        timeout_s=timeout_s,
-    )
+    try:
+        release_mbid = await _resolve_artist_album_mbid(
+            artist, album, track_count_hint=track_count_hint,
+            timeout_s=timeout_s,
+        )
+    except Unreachable as e:
+        log.info(
+            "discovery: MusicBrainz unreachable for artist=%r album=%r: %r",
+            artist, album, e,
+        )
+        return None
     if not release_mbid:
         _mark_negative(artist, album)
         return None
@@ -374,6 +380,8 @@ async def _resolve_artist_album_mbid(
     """Resolve the best MBID for (artist, album). When a track-count
     hint is provided, walk up to 6 candidates and pick the one whose
     track count is closest. Without a hint, just return the first match.
+    None means MusicBrainz has no such release; raises ``Unreachable``
+    when the search, or every candidate's tracklist fetch, got no answer.
     """
     if track_count_hint is None or track_count_hint <= 0:
         hit = await coverart.fetch_release_mbid(
@@ -388,11 +396,13 @@ async def _resolve_artist_album_mbid(
         return None
     best_mbid: Optional[str] = None
     best_diff = -1
+    unreachable = 0
     for mbid, _rg in candidates:  # skylos: ignore SKY-U401 — _rg (release-group MBID) is intentionally unused; only mbid drives the recording fetch
         recordings = await coverart.fetch_release_recordings(
             mbid, timeout_s=timeout_s,
         )
         if recordings is None:
+            unreachable += 1
             continue
         diff = abs(len(recordings) - track_count_hint)
         if best_mbid is None or diff < best_diff:
@@ -400,16 +410,27 @@ async def _resolve_artist_album_mbid(
             best_diff = diff
             if diff == 0:
                 break
+    if best_mbid is None and unreachable:
+        raise Unreachable(f"{unreachable} candidate tracklists not fetched")
     return best_mbid
 
 
 # ── Persistence ────────────────────────────────────────────────────────
 
 
-async def persist(release: dict) -> None:
+async def persist(
+    release: dict, *, lookup_key: tuple[str, str] | None = None,
+) -> None:
     """Write a release + tracks into discovered.sqlite. Idempotent:
-    re-running with the same MBID replaces the release row and rewrites
-    its tracks.
+    re-running with the same MBID updates the release row and rewrites
+    its tracks, keeping a stored duration where the new tracklist has
+    none.
+
+    ``lookup_key`` is the Shazam ``(artist, album)`` that led to this
+    release; it is stored so the same Shazam strings find the release
+    again. When the album is already stored under another MBID (same
+    artist, title and year), the key points at that row and no second
+    row is written.
     """
     mbid = release.get("mbid")
     if not mbid:
@@ -420,44 +441,90 @@ async def persist(release: dict) -> None:
     for t in tracks:
         raw = t.get("title") or ""
         cleaned.append(_clean_title(raw))
-    await asyncio.to_thread(_persist_sync, release, cleaned)
+    await asyncio.to_thread(_persist_sync, release, cleaned, lookup_key)
 
 
-def _persist_sync(release: dict, cleaned: list[tuple[str, str]]) -> None:
+def _stored_mbid_of_same_album(con, release: dict) -> Optional[str]:
+    """MBID of a different stored release with this one's artist, title
+    and year, or None."""
+    row = con.execute(
+        "SELECT mbid FROM releases "
+        "WHERE mbid != ? AND LOWER(artist) = ? AND normalized_album = ? "
+        "AND year IS ? ORDER BY discovered_at, mbid",
+        (
+            release["mbid"],
+            normalize_artist(release.get("artist") or ""),
+            normalize_album(release.get("album") or ""),
+            release.get("year"),
+        ),
+    ).fetchone()
+    return row["mbid"] if row else None
+
+
+def _write_release(con, release: dict, cleaned: list[tuple[str, str]]) -> None:
     mbid = release["mbid"]
-    artist = release.get("artist") or ""
     title = release.get("album") or ""
-    year = release.get("year")
-    art_url = release.get("art_url")
-    discogs_release_id = release.get("discogs_release_id")
-    tracks = release.get("tracks") or []
-    now_s = int(time.time())
+    con.execute(
+        "INSERT INTO releases "
+        "(mbid, artist, title, year, art_url, "
+        "discogs_release_id, discovered_at, normalized_album) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(mbid) DO UPDATE SET "
+        "artist = excluded.artist, title = excluded.title, "
+        "year = excluded.year, "
+        "art_url = COALESCE(excluded.art_url, releases.art_url), "
+        "discogs_release_id = COALESCE("
+        "excluded.discogs_release_id, releases.discogs_release_id), "
+        "normalized_album = excluded.normalized_album",
+        (mbid, release.get("artist") or "", title, release.get("year"),
+         release.get("art_url"), release.get("discogs_release_id"),
+         int(time.time()), normalize_album(title)),
+    )
+    stored_durations = {
+        row["position"]: row["duration_seconds"]
+        for row in con.execute(
+            "SELECT position, duration_seconds FROM tracks WHERE mbid = ?",
+            (mbid,),
+        )
+    }
+    con.execute("DELETE FROM tracks WHERE mbid = ?", (mbid,))
+    for t, (clean, source) in zip(release.get("tracks") or [], cleaned):
+        position = t.get("position") or ""
+        duration = t.get("duration_seconds")
+        if duration is None:
+            duration = stored_durations.get(position)
+        con.execute(
+            "INSERT INTO tracks "
+            "(mbid, position, side, title, duration_seconds, "
+            "clean_title, clean_title_source) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (mbid, position, t.get("side"), t.get("title") or "",
+             duration, clean, source),
+        )
+
+
+def _persist_sync(
+    release: dict,
+    cleaned: list[tuple[str, str]],
+    lookup_key: tuple[str, str] | None,
+) -> None:
     with open_rw() as con:
         con.execute("BEGIN")
         try:
-            con.execute(
-                "INSERT OR REPLACE INTO releases "
-                "(mbid, artist, title, year, art_url, "
-                "discogs_release_id, discovered_at, normalized_album) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (mbid, artist, title, year, art_url,
-                 discogs_release_id, now_s, normalize_album(title)),
+            target = release["mbid"]
+            stored = (
+                _stored_mbid_of_same_album(con, release) if lookup_key else None
             )
-            con.execute(
-                "DELETE FROM tracks WHERE mbid = ?", (mbid,),
-            )
-            for t, (clean, source) in zip(tracks, cleaned):
+            if stored:
+                target = stored
+            else:
+                _write_release(con, release, cleaned)
+            if lookup_key:
                 con.execute(
-                    "INSERT INTO tracks "
-                    "(mbid, position, side, title, duration_seconds, "
-                    "clean_title, clean_title_source) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (mbid, t.get("position") or "",
-                     t.get("side"),
-                     t.get("title") or "",
-                     t.get("duration_seconds"),
-                     clean,
-                     source),
+                    "INSERT OR REPLACE INTO release_aliases "
+                    "(artist_norm, album_norm, mbid) VALUES (?, ?, ?)",
+                    (normalize_artist(lookup_key[0]),
+                     normalize_album(lookup_key[1]), target),
                 )
             con.commit()
         except Exception:
@@ -476,11 +543,12 @@ def find_discovered_release_by_artist_album(
     cascade to attach tracklist on a Shazam hit when MB was already
     persisted from a prior heartbeat.
 
-    Matches on ``normalized_album`` so Shazam's edition-suffixed strings
-    (``"Brothers (Deluxe Remastered Anniversary Edition)"``) resolve to
-    MB's canonical row (``"Brothers"``). Falls back to legacy exact
-    LOWER(title) match for unmigrated rows (shouldn't trip after
-    init_db backfill, but defensive).
+    Matches first on the Shazam key stored by :func:`persist`, then on
+    the release's own artist + ``normalized_album`` so Shazam's
+    edition-suffixed strings (``"Brothers (Deluxe Remastered Anniversary
+    Edition)"``) resolve to MB's canonical row (``"Brothers"``). Falls
+    back to legacy exact LOWER(title) match for unmigrated rows
+    (shouldn't trip after init_db backfill, but defensive).
     """
     if not artist or not album:
         return None
@@ -488,6 +556,14 @@ def find_discovered_release_by_artist_album(
     album_norm = normalize_album(album)
     try:
         with open_ro() as con:
+            row = con.execute(
+                "SELECT a.mbid FROM release_aliases a "
+                "JOIN releases r ON r.mbid = a.mbid "
+                "WHERE a.artist_norm = ? AND a.album_norm = ?",
+                (artist_norm, album_norm),
+            ).fetchone()
+            if row:
+                return row["mbid"]
             row = con.execute(
                 "SELECT mbid FROM releases "
                 "WHERE LOWER(artist) = ? AND normalized_album = ?",

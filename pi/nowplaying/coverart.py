@@ -31,7 +31,15 @@ from typing import Literal, Optional
 
 import aiohttp
 
+from nowplaying import art_cache
+
 log = logging.getLogger("nowplaying.coverart")
+
+
+class Unreachable(Exception):
+    """MusicBrainz gave no answer (transport error, or a status other than
+    200/404). Not a miss: nothing may be negative-cached on it."""
+
 
 # MusicBrainz requires a descriptive User-Agent with contact info per their
 # TOS. The repo URL serves as contact for unattended deployments.
@@ -177,13 +185,14 @@ async def _mb_search_once(
     - status=non-200 (None) on other HTTP error
     Raises aiohttp.ClientError / asyncio.TimeoutError on transport failure.
     """
-    async with session.get(  # skylos: ignore SKY-D216 — url built from hardcoded musicbrainz.org / coverartarchive.org templates; only MBIDs interpolated
-        url, headers=headers,
-        timeout=aiohttp.ClientTimeout(total=timeout_s),
-    ) as resp:
-        if resp.status != 200:
-            return None, resp.status
-        return await resp.json(), 200
+    async with art_cache.musicbrainz_slot():
+        async with session.get(  # skylos: ignore SKY-D216 — url built from the module-level MB_SEARCH_URL constant + urllib-quoted query; host is fixed (musicbrainz.org)
+            url, headers=headers,
+            timeout=aiohttp.ClientTimeout(total=timeout_s),
+        ) as resp:
+            if resp.status != 200:
+                return None, resp.status
+            return await resp.json(), 200
 
 
 def _build_mb_search_url(artist: str, album: str, *, limit: int = 5) -> str:
@@ -287,6 +296,10 @@ async def search_release_candidates(
 
     Negative cache is honored but NOT stamped here — that's the
     populator's job after the release-group fallback has also missed.
+
+    ``[]`` means MusicBrainz answered and has no such release. Raises
+    :class:`Unreachable` when it gave no answer (transport error, or a
+    status other than 200/404).
     """
     if not artist or not album:
         return []
@@ -329,20 +342,24 @@ async def _search_candidates_once(
     """One MusicBrainz search attempt for ``(artist, album)``. Extracted
     so :func:`search_release_candidates` can call it twice (literal,
     then normalized fallback) without duplicating the HTTP plumbing.
+    Raises :class:`Unreachable` when MusicBrainz gave no answer.
     """
     url = _build_mb_search_url(artist, album, limit=limit)
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
     try:
-        async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=timeout_s),
-        ) as session:
-            async with session.get(url, headers=headers) as resp:  # skylos: ignore SKY-D216 — url built from module-level MB_SEARCH_URL constant + urllib-quoted query; host is fixed (musicbrainz.org)
-                if resp.status != 200:
-                    return []
-                data = await resp.json()
+        async with art_cache.musicbrainz_slot():
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=timeout_s),
+            ) as session:
+                async with session.get(url, headers=headers) as resp:  # skylos: ignore SKY-D216 — url built from module-level MB_SEARCH_URL constant + urllib-quoted query; host is fixed (musicbrainz.org)
+                    if resp.status == 404:
+                        return []
+                    if resp.status != 200:
+                        raise Unreachable(f"status={resp.status}")
+                    data = await resp.json()
     except (aiohttp.ClientError, asyncio.TimeoutError) as e:
         log.debug("musicbrainz search_release_candidates failed: %r", e)
-        return []
+        raise Unreachable(repr(e)) from e
     out: list[tuple[str, Optional[str]]] = []
     for rel in data.get("releases") or []:
         rid = rel.get("id")
@@ -364,7 +381,9 @@ async def _mb_search_with_normalized_fallback(
 ) -> Optional[tuple[str, Optional[str]]]:
     """Run the literal MB search, then optionally the normalized-title
     fallback. Stamps the negative cache on a definitive 404 from either
-    attempt. Returns the hit tuple on success, else None."""
+    attempt. Returns the hit tuple on success, None when MusicBrainz
+    answered with no match; raises :class:`Unreachable` when a search got
+    no answer."""
     hit, status = await _mb_search(
         artist, album, session=session, timeout_s=timeout_s,
     )
@@ -375,6 +394,8 @@ async def _mb_search_with_normalized_fallback(
         # the normalized retry (the endpoint itself returned not-found).
         mark_negative(artist, album)
         return None
+    if status != 200:
+        raise Unreachable(f"status={status}")
     normalized = _normalize_album_title(album)
     if not normalized or normalized == album:
         return None
@@ -388,6 +409,9 @@ async def _mb_search_with_normalized_fallback(
         return hit2
     if status2 == 404:
         mark_negative(artist, album)
+        return None
+    if status2 != 200:
+        raise Unreachable(f"status={status2}")
     return None
 
 
@@ -398,7 +422,10 @@ async def fetch_release_mbid(
     timeout_s: float = 15.0,
 ) -> Optional[tuple[str, Optional[str]]]:
     """Search MusicBrainz for a release matching (artist, album). Returns
-    `(release_mbid, release_group_mbid)` on hit, else None.
+    `(release_mbid, release_group_mbid)` on hit, None when MusicBrainz
+    answered and has no match. Raises :class:`Unreachable` when it gave no
+    answer (transport error, or a status other than 200/404, after the
+    retry).
 
     Issues a second search with a normalized album title if the literal
     title misses — strips edition markers and trailing anniversary digits.
@@ -451,15 +478,16 @@ async def fetch_release_recordings(  # skylos: ignore SKY-Q301 SKY-Q306 SKY-Q302
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
     timeout = aiohttp.ClientTimeout(total=timeout_s)
     try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url, headers=headers) as resp:  # skylos: ignore SKY-D216 — url built from hardcoded musicbrainz.org template; only MBID interpolated
-                if resp.status != 200:
-                    log.warning(
-                        "musicbrainz: release %s returned status=%d",
-                        mbid, resp.status,
-                    )
-                    return None
-                data = await resp.json()
+        async with art_cache.musicbrainz_slot():
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url, headers=headers) as resp:  # skylos: ignore SKY-D216 — url built from hardcoded musicbrainz.org template; only MBID interpolated
+                    if resp.status != 200:
+                        log.warning(
+                            "musicbrainz: release %s returned status=%d",
+                            mbid, resp.status,
+                        )
+                        return None
+                    data = await resp.json()
     except (aiohttp.ClientError, asyncio.TimeoutError) as e:
         log.warning(
             "musicbrainz: release %s fetch failed: %r", mbid, e,
@@ -513,15 +541,16 @@ async def fetch_recording_duration(
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
     timeout = aiohttp.ClientTimeout(total=timeout_s)
     try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url, headers=headers) as resp:  # skylos: ignore SKY-D216 — url built from hardcoded musicbrainz.org template; only recording MBID interpolated
-                if resp.status != 200:
-                    log.warning(
-                        "musicbrainz: recording %s returned status=%d",
-                        recording_mbid, resp.status,
-                    )
-                    return None
-                data = await resp.json()
+        async with art_cache.musicbrainz_slot():
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url, headers=headers) as resp:  # skylos: ignore SKY-D216 — url built from hardcoded musicbrainz.org template; only recording MBID interpolated
+                    if resp.status != 200:
+                        log.warning(
+                            "musicbrainz: recording %s returned status=%d",
+                            recording_mbid, resp.status,
+                        )
+                        return None
+                    data = await resp.json()
     except (aiohttp.ClientError, asyncio.TimeoutError) as e:
         log.warning(
             "musicbrainz: recording %s fetch failed: %r",

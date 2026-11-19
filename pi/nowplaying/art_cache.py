@@ -18,22 +18,29 @@ Negative-cache semantics (from PR #74 / art-pipeline-reliability):
   short-circuits the negative stamp, so the next recognition retries
   cleanly.
 
-Rate-limiting (added for stats-missing-album-art, PR #154):
+Rate-limiting:
 
 - MusicBrainz enforces a strict 1 request-per-second rate limit.
-- ``_mb_semaphore`` (Semaphore(1)) serializes all in-flight HTTP calls to
-  MusicBrainz across the whole process. A 1-second sleep *after* each
-  successful HTTP call enforces the inter-request delay (a semaphore alone
-  only limits concurrency, not rate).
+- ``musicbrainz_slot`` is the one gate every MusicBrainz HTTP request in
+  the process goes through (``coverart`` and
+  ``discovery.musicbrainz_lookup`` take it around each request). It holds
+  ``_mb_semaphore`` (Semaphore(1)) for the request and, before letting it
+  start, waits until ``MUSICBRAINZ_MIN_INTERVAL_S`` has passed since the
+  previous one finished (a semaphore alone only limits concurrency, not
+  rate). Cover Art Archive requests are a different service and do not
+  take it.
 - ``_mb_inflight`` tracks release_ids currently being fetched so that a
   burst of concurrent /art/<id> 404s (e.g. dashboard loading 10 album cards
   at once) only spawns one task per release_id rather than queuing many
-  redundant tasks that all drain through the semaphore sequentially.
+  redundant tasks that all drain through the gate sequentially.
 """
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import time
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 from nowplaying import coverart
@@ -44,9 +51,12 @@ log = logging.getLogger("nowplaying.art_cache")
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MUSICBRAINZ_ART_DIR = REPO_ROOT / "pi" / "data" / "art" / "musicbrainz"
 
+# MusicBrainz's anonymous rate limit: one request per second.
+MUSICBRAINZ_MIN_INTERVAL_S = 1.0
 # Serialises all outbound MusicBrainz HTTP calls — one in-flight at a time.
-# The sleep(1) inside the critical section enforces the 1 req/s rate limit.
 _mb_semaphore: asyncio.Semaphore | None = None
+# time.monotonic() when the previous MusicBrainz request finished.
+_mb_last_request_at: float | None = None
 # Set of release_ids currently being fetched. Prevents duplicate tasks for
 # the same release when the dashboard issues several concurrent /art/<id>
 # requests before the first one completes.
@@ -64,6 +74,30 @@ def _get_semaphore() -> asyncio.Semaphore:
     if _mb_semaphore is None:
         _mb_semaphore = asyncio.Semaphore(1)
     return _mb_semaphore
+
+
+@contextlib.asynccontextmanager
+async def musicbrainz_slot() -> AsyncIterator[None]:
+    """Hold the process-wide MusicBrainz slot for one HTTP request.
+
+    One request is in flight at a time, and it starts no sooner than
+    ``MUSICBRAINZ_MIN_INTERVAL_S`` after the previous one finished. Wrap
+    only the request itself, so the caller's HTTP timeout does not count
+    the wait for the slot.
+    """
+    global _mb_last_request_at
+    async with _get_semaphore():
+        if _mb_last_request_at is not None:
+            wait_s = (
+                _mb_last_request_at + MUSICBRAINZ_MIN_INTERVAL_S
+                - time.monotonic()
+            )
+            if wait_s > 0:
+                await asyncio.sleep(wait_s)
+        try:
+            yield
+        finally:
+            _mb_last_request_at = time.monotonic()
 
 
 def _handle_missing_art(
@@ -112,50 +146,38 @@ async def maybe_cache(release_id: int, artist: str, album: str) -> None:
     ``asyncio.create_task(art_cache.maybe_cache(...))``.
 
     Concurrency / rate-limiting:
-    - Fast pre-check: if the file already exists, return immediately without
-      touching the semaphore.
-    - Acquire ``_mb_semaphore`` (Semaphore(1)) before any outbound HTTP call.
-      This serializes all MusicBrainz requests process-wide.
-    - TOCTOU double-check: re-test file existence inside the semaphore so a
-      queued task skips the MB call if a prior task already wrote the file.
-    - After a successful HTTP round-trip, sleep 1 second inside the semaphore
-      to enforce MusicBrainz's 1 req/s rate limit. (Semaphore(1) alone limits
-      concurrency but not rate — without the sleep, sub-second responses would
-      allow back-to-back requests faster than 1/s.)
+    - If the file already exists, return without any HTTP call.
+    - The MusicBrainz search inside ``coverart.fetch_release_mbid`` takes
+      ``musicbrainz_slot`` itself; the Cover Art Archive downloads that
+      follow are not MusicBrainz requests.
     - ``_mb_inflight`` is managed by the *caller* (art_handler) so that it can
       skip scheduling duplicate tasks before they even reach this function.
     """
     if not artist or not album:
         return
     out = MUSICBRAINZ_ART_DIR / f"{release_id}.jpg"
-    # Fast pre-check: skip semaphore acquisition when art is already on disk.
     if out.exists():
         return
-    sem = _get_semaphore()
-    async with sem:
-        # TOCTOU double-check: another task may have written the file while
-        # we waited to acquire the semaphore.
-        if out.exists():
-            return
+    try:
         found = await coverart.fetch_release_mbid(artist, album)
-        if not found:
-            # No MB match — release the semaphore promptly; still sleep to
-            # avoid hammering the MBID lookup endpoint on a burst.
-            await asyncio.sleep(1)
-            return
-        release_mbid, rg_mbid = found
-        data, outcome_release = await coverart.fetch_cover_art(release_mbid)
-        source = f"release={release_mbid}"
-        outcome_rg: str = "missing" if not rg_mbid else ""
-        if not data and rg_mbid:
-            # Anniversary / deluxe / variant pressings often have no art on the
-            # specific MB release but DO have it on the parent release-group.
-            data, outcome_rg = await coverart.fetch_cover_art_release_group(rg_mbid)
-            source = f"release-group={rg_mbid}"
-        if not data:
-            _handle_missing_art(release_id, artist, album, outcome_release, outcome_rg)
-        else:
-            _write_art(out, data, release_id, source)
-        # Enforce 1 req/s — sleep inside the semaphore so the next waiter
-        # doesn't start its HTTP call until at least 1 second after ours.
-        await asyncio.sleep(1)
+    except coverart.Unreachable as e:
+        log.info(
+            "[coverart] MusicBrainz unreachable for release=%s: %r",
+            release_id, e,
+        )
+        return
+    if not found:
+        return
+    release_mbid, rg_mbid = found
+    data, outcome_release = await coverart.fetch_cover_art(release_mbid)
+    source = f"release={release_mbid}"
+    outcome_rg: str = "missing" if not rg_mbid else ""
+    if not data and rg_mbid:
+        # Anniversary / deluxe / variant pressings often have no art on the
+        # specific MB release but DO have it on the parent release-group.
+        data, outcome_rg = await coverart.fetch_cover_art_release_group(rg_mbid)
+        source = f"release-group={rg_mbid}"
+    if not data:
+        _handle_missing_art(release_id, artist, album, outcome_release, outcome_rg)
+    else:
+        _write_art(out, data, release_id, source)

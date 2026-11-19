@@ -105,8 +105,8 @@ def test_lookup_by_isrc_returns_release(monkeypatch, tmp_path):
         "recordings": [
             {
                 "releases": [
-                    {"id": "bootleg-mbid", "status": "Bootleg"},
-                    {"id": "good-mbid", "status": "Official"},
+                    {"id": "bootleg-mbid", "status": "Bootleg", "title": "Harvest"},
+                    {"id": "good-mbid", "status": "Official", "title": "Harvest"},
                 ],
             },
         ],
@@ -116,7 +116,7 @@ def test_lookup_by_isrc_returns_release(monkeypatch, tmp_path):
         _MockResp(200, _FULL_RELEASE_PAYLOAD),
     ]
     with _patch_session_sequence(responses):
-        out = _run(mbl.lookup_by_isrc("USRE17500095"))
+        out = _run(mbl.lookup_by_isrc("USRE17500095", "Harvest"))
 
     assert out is not None
     assert out["mbid"] == "good-mbid"
@@ -135,13 +135,13 @@ def test_lookup_by_isrc_returns_release(monkeypatch, tmp_path):
 def test_lookup_by_isrc_empty_returns_none():
     from nowplaying.discovery import musicbrainz_lookup as mbl
     with _patch_session_sequence([_MockResp(200, {"recordings": []})]):
-        out = _run(mbl.lookup_by_isrc("BOGUS"))
+        out = _run(mbl.lookup_by_isrc("BOGUS", "Harvest"))
     assert out is None
 
 
 def test_lookup_by_isrc_short_circuits_empty_input():
     from nowplaying.discovery import musicbrainz_lookup as mbl
-    assert _run(mbl.lookup_by_isrc("")) is None
+    assert _run(mbl.lookup_by_isrc("", "Harvest")) is None
 
 
 def test_lookup_by_artist_album_simple_path(monkeypatch):

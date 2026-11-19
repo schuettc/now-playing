@@ -75,4 +75,19 @@ def normalize_artist(name: str) -> str:
     return name.strip().lower()
 
 
-__all__ = ["normalize_album", "normalize_artist"]
+_PUNCTUATION_RE = re.compile(r"[^\w\s]")
+
+
+def albums_match(a: str, b: str) -> bool:
+    """True when two album titles name the same album once edition
+    suffixes and punctuation are set aside, so Shazam's
+    ``"X (Original Soundtrack)"`` equals MusicBrainz's ``"X: Original
+    Soundtrack"``."""
+    def loose(name: str) -> str:
+        return " ".join(_PUNCTUATION_RE.sub(" ", normalize_album(name)).split())
+
+    la = loose(a)
+    return bool(la) and la == loose(b)
+
+
+__all__ = ["albums_match", "normalize_album", "normalize_artist"]
