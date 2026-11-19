@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react';
+import { useCallback } from 'react';
 import { useIdentifyContext } from '@/hooks/identifyContext';
 import { useStore } from '@/store/useStore';
 import { MOTION } from '@/lib/motion';
@@ -80,23 +80,42 @@ function reportFailure(reason: string, entry: PinEntry): void {
   }
 }
 
-async function handlePinResult(
+type PinActions = Pick<ReturnType<typeof useIdentifyContext>, 'pin' | 'clearPin'>;
+
+// Shared by every caller of the hook (each tracklist row and the guess
+// card has its own), so "latest" means the latest tap anywhere.
+let latestRequestId = 0;
+
+function handlePinResult(
   result: PinTrackResult,
   entry: PinEntry,
   myRequestId: number,
-  latestRequestId: { current: number },
-  identify: ReturnType<typeof useIdentifyContext>,
-): Promise<PinTrackResult> {
+  identify: PinActions,
+): PinTrackResult {
   if (result.ok) return result;
   const reason = result.reason ?? 'unknown';
   reportFailure(reason, entry);
   // Only revert if we're still the latest request — a newer tap
   // may have already moved the pin forward.
-  if (latestRequestId.current === myRequestId) {
+  if (latestRequestId === myRequestId) {
     identify.clearPin();
     useStore.getState().setPinErrorReason(reason);
   }
   return result;
+}
+
+/** The optimistic pin sequence behind `usePinTrack`; see the hook. */
+export async function pinTrackWith(
+  identify: PinActions,
+  args: PinTrackArgs,
+): Promise<PinTrackResult> {
+  const { release_id, track_position, entry, isCurrentAlbum = true } = args;
+  const myRequestId = ++latestRequestId;
+  identify.pin(release_id, track_position);
+  useStore.getState().pulseLearningChip();
+  const endpoint = isCurrentAlbum ? '/api/pin-track' : '/api/identify';
+  const result = await postTrackAction(endpoint, release_id, track_position);
+  return handlePinResult(result, entry, myRequestId, identify);
 }
 
 /**
@@ -115,26 +134,14 @@ async function handlePinResult(
  *  5. On 200: success — the WS reconciliation will land the canonical
  *     payload soon.
  *
- * In-flight tracking: a ref-based request id ensures a stale 4xx
- * from an earlier tap can't revert a newer in-flight tap.
+ * In-flight tracking: a module-wide request id ensures a stale failure
+ * from an earlier tap can't revert a newer tap, on the same row or
+ * another one.
  *
  * See `docs/features/identify-guess-confirm/plan.md` Step 8.
  * See `docs/features/identify-lookup-recents-one-tap/plan.md` Step 6.
  */
 export function usePinTrack(): (args: PinTrackArgs) => Promise<PinTrackResult> {
   const identify = useIdentifyContext();
-  const latestRequestId = useRef(0);
-
-  return useCallback(
-    async (args: PinTrackArgs): Promise<PinTrackResult> => {
-      const { release_id, track_position, entry, isCurrentAlbum = true } = args;
-      const myRequestId = ++latestRequestId.current;
-      identify.pin(release_id, track_position);
-      useStore.getState().pulseLearningChip();
-      const endpoint = isCurrentAlbum ? '/api/pin-track' : '/api/identify';
-      const result = await postTrackAction(endpoint, release_id, track_position);
-      return handlePinResult(result, entry, myRequestId, latestRequestId, identify);
-    },
-    [identify],
-  );
+  return useCallback((args: PinTrackArgs) => pinTrackWith(identify, args), [identify]);
 }
