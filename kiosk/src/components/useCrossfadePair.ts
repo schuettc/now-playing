@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 
 // the previous album's art indefinitely.
 const ONLOAD_TIMEOUT_MS = 2000;
 
-interface Layer {
+export interface Layer {
   identity: string;
   src?: string;
 }
@@ -38,17 +38,28 @@ function startFallbackTimer(
   }, ONLOAD_TIMEOUT_MS);
 }
 
+/**
+ * A changed `src` under an unchanged identity (a per-track art URL on the
+ * same album, or art arriving after a payload with none) updates the layer
+ * in place: no crossfade, and the layer keeps its loaded image until the new
+ * one is ready.
+ */
+export function swapSrcInPlace(layer: Layer, identity: string, src?: string): Layer {
+  if (layer.identity !== identity || layer.src === src) return layer;
+  return { ...layer, src };
+}
+
 export function useCrossfadePair(identity: string, src?: string): CrossfadePair {
   const [current, setCurrent] = useState<Layer>({ identity, src });
   const [previous, setPrevious] = useState<Layer | null>(null);
   const [currentReady, setCurrentReady] = useState(false);
   const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Identity change: crossfade from the old layer to a new one. Reads the
+  // state as of the render where identity changed, so it is keyed on
+  // identity alone.
   useEffect(() => {
-    if (identity === current.identity) {
-      if (src !== current.src) setCurrent((c) => ({ ...c, src }));
-      return;
-    }
+    if (identity === current.identity) return;
     setPrevious(currentReady ? current : null);
     setCurrent({ identity, src });
     setCurrentReady(false);
@@ -59,6 +70,12 @@ export function useCrossfadePair(identity: string, src?: string): CrossfadePair 
     return () => clearFallbackTimer(fallbackTimerRef);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [identity]);
+
+  // Runs after the identity effect, so on an identity change the updater
+  // sees the new layer and leaves it alone.
+  useEffect(() => {
+    setCurrent((c) => swapSrcInPlace(c, identity, src));
+  }, [identity, src]);
 
   const handleReady = useCallback(() => {
     if (fallbackTimerRef.current !== null) {

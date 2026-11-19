@@ -1,5 +1,6 @@
 import { AnimatePresence, motion } from 'framer-motion';
 import { CrossfadeLayer } from './CrossfadeLayer';
+import { NoArtFallback } from './NoArtFallback';
 import { useCrossfadePair } from './useCrossfadePair';
 
 interface Props {
@@ -12,14 +13,6 @@ interface Props {
 /** Animate target values that differ only by the `dim` flag. */
 function buildDimAnimate(dim: boolean) {
   return { opacity: dim ? 0.35 : 1, scale: 1, filter: dim ? 'saturate(0.5)' : 'saturate(1)' };
-}
-
-function NoArtFallback() {
-  return (
-    <div className="flex h-full w-full items-center justify-center bg-zinc-900 text-zinc-500">
-      <span className="font-mono text-sm tracking-widest">NO ART</span>
-    </div>
-  );
 }
 
 function CurrentArtLayer({
