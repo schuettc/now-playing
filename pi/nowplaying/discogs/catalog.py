@@ -553,7 +553,8 @@ def _rank_candidates(
     sticky_bonus: int = 25,
 ) -> list[tuple[int, int, int, dict]]:
     """Score each candidate WITH sticky bonus and rank descending by
-    (score_with_sticky, year). Drops anything below the 60 floor.
+    (score_with_sticky, year). The 60 floor is implied by the similarity
+    floors in ``_score_candidate`` and drops nothing they let through.
     Returns a list of (score_with_sticky, base_score, year, row) tuples."""
     scored: list[tuple[int, int, int, dict]] = []
     for c in candidates:
@@ -565,6 +566,29 @@ def _rank_candidates(
         scored.append((score_with_sticky, base_with_biases, year, c["row"]))
     scored.sort(key=lambda t: (t[0], t[2]), reverse=True)
     return scored
+
+
+def _prefer_exact_title(
+    scored: list[tuple[int, int, int, dict]], title: str,
+) -> tuple[int, int, int, dict]:
+    """The top entry, unless other tracks of its release share its
+    normalised title ("... (Parts 1-5)" / "... (Parts 6-9)", a reprise):
+    then the one whose full title is closest to ``title``. An equal
+    closeness keeps the ranked order, so the side-first bonus decides."""
+    best = scored[0]
+    norm_best = _normalize(best[3]["track_title"] or "")
+    peers = [
+        entry for entry in scored
+        if entry[3]["release_id"] == best[3]["release_id"]
+        and _normalize(entry[3]["track_title"] or "") == norm_best
+    ]
+    raw_title = title.lower().strip()
+    return max(
+        peers,
+        key=lambda entry: _string_sim(
+            raw_title, (entry[3]["track_title"] or "").lower().strip(),
+        ),
+    )
 
 
 def _collect_alternates(
@@ -618,13 +642,11 @@ def _find_by_artist_title_primary(
             - First-on-side bonus: +15 (A1/B1/... — the dominant disambiguation
               signal since users almost always start records from the beginning).
             - Sticky-release bonus: +25 when the candidate matches the caller's
-              preferred_release_id (the album currently in flight). Big enough
-              to flip the choice when an equivalent-scoring alternate exists,
-              not big enough to override a genuinely better artist/title match.
-            - Vinyl-format bonus: +5 (slight LP preference).
-            - Compilation penalty: -3 (small tiebreaker for the narrow case
-              where the same song is A1 on both an LP and a compilation).
-      3. Among remaining ties, prefer the most recent vinyl pressing (highest year).
+              preferred_release_id (the album currently in flight). It
+              outweighs the side-first bonus.
+      3. Among remaining ties, prefer the most recent pressing (highest year).
+      4. Tracks of the winning release that share its normalised title
+         are told apart by their full titles (``_prefer_exact_title``).
 
     Returns the best release dict (with tracks) or None.
     """
@@ -656,9 +678,6 @@ def _find_by_artist_title_primary(
         )
         return None
 
-    # Two-pass scoring so the sticky bonus can be downgraded when a non-sticky
-    # candidate has a stronger physical signal (side-first). Single-pass would let
-    # sticky dominate even when the user is clearly on a different album.
     candidates = [
         cand for r in rows
         if _album_matches(album, r["album"])
@@ -674,7 +693,7 @@ def _find_by_artist_title_primary(
     scored = _rank_candidates(candidates)
     if not scored:
         return None
-    best = scored[0]
+    best = _prefer_exact_title(scored, title)
     full = get_release(best[3]["release_id"])
     if full is None:
         return None
