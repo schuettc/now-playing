@@ -22,6 +22,7 @@ from nowplaying.vinyl import fingerprint as _fp
 from nowplaying.orchestrator.streaming_idle import (
     HEARTBEAT_INTERVAL_S,
     RECOGNITION_LEAD_S,
+    _evaluate_sticky_idle,
 )
 from nowplaying.orchestrator.prediction import enrich_guess_contract
 
@@ -398,9 +399,6 @@ class PublishEnrichmentMixin:
         through to. TV / radio push their own events.
         """
         stop = self.stop
-        sonos_coord = self.sonos_coord
-        if sonos_coord is None:
-            return
         while not stop.is_set():
             try:
                 await asyncio.wait_for(stop.wait(), timeout=HEARTBEAT_INTERVAL_S)
@@ -408,17 +406,23 @@ class PublishEnrichmentMixin:
             except asyncio.TimeoutError:
                 # Expected: heartbeat-interval elapsed, time to repoll.
                 log.debug("sonos_repoll_loop: heartbeat interval elapsed; running tick")
-            await self._run_repoll_tick(sonos_coord)
+            await self._run_repoll_tick()
 
-    async def _run_repoll_tick(self, sonos_coord) -> None:
-        """One iteration of the sonos repoll loop: gate on source/state,
-        poll Sonos, and dispatch a synthetic event when the polled track
+    async def _run_repoll_tick(self) -> None:
+        """One iteration of the sonos repoll loop: gate on source, poll
+        Sonos, and dispatch a synthetic event when the polled track
         differs from what's currently published (or unconditionally on
         streaming so queue position advances). Runs for airplay even when
         no metadata has arrived yet — that is exactly the state this loop
-        exists to recover from.
+        exists to recover from. The event carries the transport state of
+        the last real NOTIFY, so a poll never turns a paused session into
+        a playing one. Polls the coordinator the listener currently holds
+        (see ``adopt_sonos_coord``); a no-op until there is one.
         """
         state = self.state
+        sonos_coord = self.sonos_coord
+        if sonos_coord is None:
+            return
         if state.sonos_source not in ("airplay", "streaming"):
             return
         # Deliberately NOT gated on state.sonos_has_metadata. That flag
@@ -429,6 +433,7 @@ class PublishEnrichmentMixin:
         # an empty DIDL could never recover, because this loop is the only
         # periodic path that pulls the late metadata across. The no-title
         # guard below makes the genuinely-metadata-less case a cheap no-op.
+        polled_at = datetime.now(timezone.utc)
         try:
             polled = await poll_track(sonos_coord)
         except Exception as e:  # noqa: BLE001
@@ -439,11 +444,18 @@ class PublishEnrichmentMixin:
         cached = state.last_vinyl or {}
         if self._repoll_should_skip(cached, polled):
             return
+        # The idle cleared last_vinyl, so an unchanged paused track looks
+        # new here. on_sonos_event would drop it; skip before logging.
+        if _evaluate_sticky_idle(
+            state.idled_source, state.idled_title,
+            state.sonos_source, state.sonos_state, polled.get("title"),
+        ) == "short_circuit":
+            return
         log.info(
             "%s repoll: track now %s — %s",
             state.sonos_source, polled.get("artist"), polled.get("title"),
         )
-        await self.on_sonos_event(self._build_synthetic_event(cached, polled))
+        await self.on_sonos_event(self._build_synthetic_event(polled, polled_at))
 
     def _repoll_should_skip(self, cached: dict, polled: dict) -> bool:
         """No track change → skip re-emit on airplay (no queue to advance).
@@ -457,25 +469,32 @@ class PublishEnrichmentMixin:
             return state.sonos_source != "streaming"
         return False
 
-    def _build_synthetic_event(self, cached: dict, polled: dict) -> dict:
+    def _build_synthetic_event(self, polled: dict, polled_at: datetime) -> dict:
         """Build the synthetic Sonos event passed to on_sonos_event from
-        a repoll tick.
+        a repoll tick. A poll only learns the track, so the transport
+        state is the one the last real NOTIFY reported. The track start
+        is the poll time minus the polled position, as the listener's own
+        enrichment computes it.
         """
         state = self.state
         synthetic = {
             "ts": recognize_proto.now_iso(),
-            "state": "PLAYING",
+            "state": state.sonos_state,
             "source": state.sonos_source,
             "title": polled["title"],
             "artist": polled["artist"],
             "album": polled.get("album"),
             "album_art": polled.get("album_art"),
             "duration": None,
-            "uri": cached.get("uri"),
-            "raw_uri_prefix": cached.get("raw_uri_prefix"),
             "didl_was_empty": False,
             "sonos_polled": True,
         }
+        position_s = polled.get("position_s")
+        if position_s is not None and position_s >= 0:
+            anchor = polled_at - timedelta(seconds=position_s)
+            synthetic["track_started_at"] = anchor.isoformat(
+                timespec="seconds",
+            ).replace("+00:00", "Z")
         if polled.get("duration_s") is not None:
             synthetic["duration_seconds"] = int(polled["duration_s"])
         return synthetic

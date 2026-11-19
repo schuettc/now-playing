@@ -73,6 +73,29 @@ async def _build_app(state: "State", llm: LLMAssist):
     return app, runner, app["broadcaster"]
 
 
+async def _wait_for_stop_or_listener_exit(
+    stop: asyncio.Event, listener_task: asyncio.Task,
+) -> bool:
+    """Block until shutdown is requested or the Sonos listener task ends.
+    Returns True when the listener ended on its own (its watchdog gave up,
+    or it crashed): the caller must then exit non-zero so systemd restarts
+    the service. Sets ``stop`` in that case so the other tasks wind down.
+    """
+    stop_wait = asyncio.create_task(stop.wait())
+    try:
+        await asyncio.wait(
+            {stop_wait, listener_task}, return_when=asyncio.FIRST_COMPLETED,
+        )
+    finally:
+        stop_wait.cancel()
+    if stop.is_set():
+        return False
+    exc = None if listener_task.cancelled() else listener_task.exception()
+    log.error("sonos listener ended without a stop request: %r — exiting", exc)
+    stop.set()
+    return True
+
+
 async def main_async() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -96,15 +119,16 @@ async def main_async() -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)
 
-    # Pre-discover the Sonos coordinator so the airplay re-poll loop can
-    # poll without re-running zone discovery on every tick.
+    # Pre-discover the Sonos coordinator so the initial-state event below
+    # can already poll the queue. The listener hands over the coordinator
+    # it subscribes to (and any it re-discovers) via adopt_sonos_coord.
     sonos_coord = await asyncio.get_running_loop().run_in_executor(
         None, find_zone, zone,
     )
     if sonos_coord is None:
         log.warning(
             "sonos zone %r not discovered at startup; "
-            "airplay repoll loop will be skipped until next restart",
+            "repoll and queue polls wait for the listener to find it",
             zone,
         )
 
@@ -118,11 +142,15 @@ async def main_async() -> None:
     except Exception as e:
         log.warning("initial state probe failed: %r", e)
 
-    listener_task = asyncio.create_task(run_listener(zone, orch.on_sonos_event, stop))
+    listener_task = asyncio.create_task(
+        run_listener(
+            zone, orch.on_sonos_event, stop, on_coord=orch.adopt_sonos_coord,
+        ),
+    )
     sonos_repoll_task = asyncio.create_task(orch.sonos_repoll_loop())
     # Start capture with the right emit state for the initial Sonos source.
-    # emit_initial_state above has already populated state.sonos_source +
-    # state.sonos_has_metadata, so we know whether to start paused without
+    # emit_initial_state above has already populated state.sonos_source,
+    # so we know whether to start paused without
     # needing to signal post-startup (avoids the race where signal_capture
     # fires before _capture_pid is registered).
     initial_should_pause = _should_pause_capture(state)
@@ -138,9 +166,12 @@ async def main_async() -> None:
     )
     hygiene_task = asyncio.create_task(orch.hygiene_loop())
 
+    listener_died = False
     try:
-        await stop.wait()
+        listener_died = await _wait_for_stop_or_listener_exit(stop, listener_task)
     finally:
         await asyncio.gather(listener_task, capture_task, hygiene_task, sonos_repoll_task, return_exceptions=True)
         await runner.cleanup()
         log.info("shutdown complete")
+    if listener_died:
+        raise SystemExit(1)

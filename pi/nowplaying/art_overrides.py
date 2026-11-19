@@ -7,8 +7,8 @@ for tracks with no release ID. The on-disk image avoids CDN requests at
 play time.
 
 ``set()`` validates ``url`` through ``net_allowlist.is_allowed_upstream``
-and the response Content-Type before persisting anything. Partial writes
-are impossible: on any failure the function raises and the index is left
+and the response Content-Type before persisting anything. On any failure
+the function raises and the index, on disk and in memory, is left
 untouched.
 """
 from __future__ import annotations
@@ -27,7 +27,7 @@ from typing import Optional
 import aiohttp
 
 from nowplaying import artcache
-from nowplaying.net_allowlist import is_allowed_upstream
+from nowplaying.net_allowlist import is_allowed_upstream, open_checked
 
 log = logging.getLogger("nowplaying.art_overrides")
 
@@ -318,8 +318,8 @@ async def _fetch_override_payload(
     as top-only strips).
     """
     try:
-        async with session.get(  # skylos: ignore SKY-D216 — url already validated by is_allowed_upstream() above
-            url,
+        async with open_checked(
+            session.get, url,
             timeout=aiohttp.ClientTimeout(total=FETCH_TIMEOUT_S),
             headers=_FETCH_HEADERS,
         ) as resp:
@@ -450,7 +450,7 @@ def _persist_override(
     with _index_lock:
         _ensure_dir()
         local_path = _write_override_file(key, ext, data)
-        index = _load_index()
+        index = dict(_load_index())
         index[key] = {
             "url": url,
             "source": source,
@@ -517,7 +517,8 @@ async def set(
 
 def clear(artist: str, album: str, *, release_id: int | None = None) -> bool:
     """Remove the override and its cached file. Returns True if anything
-    was actually removed.
+    was actually removed; False, with the override left in place, when
+    the index could not be written.
 
     Synchronous on purpose — the API DELETE handler dispatches this via
     ``asyncio.to_thread``. Index mutation is guarded by ``_index_lock``
@@ -528,7 +529,7 @@ def clear(artist: str, album: str, *, release_id: int | None = None) -> bool:
     if not key:
         return False
     with _index_lock:
-        index = _load_index()
+        index = dict(_load_index())
         rec = index.pop(key, None)
         removed_file = False
         if rec:
@@ -537,6 +538,7 @@ def clear(artist: str, album: str, *, release_id: int | None = None) -> bool:
                 _invalidate_index_cache()
             except OSError as e:
                 log.warning("art_overrides: index write failed on clear: %r", e)
+                return False
             local = rec.get("local_path")
             if local:
                 try:

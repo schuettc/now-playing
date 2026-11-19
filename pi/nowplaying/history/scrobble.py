@@ -22,11 +22,15 @@ SCROBBLE_MIN_ELAPSED_S = 240
 # 30s floor) and well within the client-convention's intent.
 SCROBBLE_UNKNOWN_DURATION_MIN_S = 120
 
-# Track which play_history row ids have already been scrobbled so coalesced
+# Track which play_history row ids Last.fm has accepted so coalesced
 # heartbeats don't double-submit. Bounded FIFO eviction to avoid unbounded
 # growth on long-running orchestrators.
 _scrobbled_ids: dict[int, None] = {}
 _SCROBBLE_CACHE_LIMIT = 500
+
+# Row ids with a scrobble request in flight, so a heartbeat that lands
+# before Last.fm answers does not send a second one.
+_scrobbling_ids: set[int] = set()
 
 # Track which (row id) have already had a now-playing notification sent so
 # repeated heartbeats for the same play only fire one "now playing" ping.
@@ -110,21 +114,26 @@ async def _maybe_fire_now_playing(ctx: _ScrobbleCtx) -> None:
 
 
 async def _maybe_scrobble(ctx: _ScrobbleCtx, duration_seconds: int | None) -> None:
-    if ctx.row_id in _scrobbled_ids:
+    if ctx.row_id in _scrobbled_ids or ctx.row_id in _scrobbling_ids:
         return
     elapsed = int(ctx.row_info["ended_at"]) - int(ctx.row_info["started_at"])
     duration = int(duration_seconds or 0)
     if not _should_scrobble(elapsed, duration):
         return
-    _remember(_scrobbled_ids, _SCROBBLE_CACHE_LIMIT, ctx.row_id)
+    _scrobbling_ids.add(ctx.row_id)
     try:
-        await _scrobble.scrobble(
+        accepted = await _scrobble.scrobble(
             ctx.artist, ctx.title, ctx.album,
             int(ctx.row_info["started_at"]),
             session=ctx.session,
         )
     except Exception as e:  # pragma: no cover — defensive
         log.warning("scrobble crashed: %r", e)
+        return
+    finally:
+        _scrobbling_ids.discard(ctx.row_id)
+    if accepted:
+        _remember(_scrobbled_ids, _SCROBBLE_CACHE_LIMIT, ctx.row_id)
 
 
 async def _safe_scrobble(row_info: dict, duration_seconds: int | None) -> None:

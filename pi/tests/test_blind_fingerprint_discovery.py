@@ -212,6 +212,21 @@ def test_blind_margin_reject(orch_cold_start, monkeypatch, tmp_path):
     assert orch_cold_start.state.unmatched_streak == 3
 
 
+def test_blind_two_refs_of_the_same_track_pass_the_margin(orch_cold_start, monkeypatch, tmp_path):
+    clip = tmp_path / "clip.wav"
+    clip.write_bytes(b"fake")
+
+    from nowplaying.vinyl import fingerprint as fp
+    monkeypatch.setattr(fp, "match", lambda *a, **kw: [
+        Hit(ref_id=10, release_id=31427573, track_position="C10", hits=80, track_position_s=30.0),
+        Hit(ref_id=11, release_id=31427573, track_position="C10", hits=70, track_position_s=45.0),
+    ])
+    from nowplaying.discogs import catalog as cat
+    monkeypatch.setattr(cat, "get_release", lambda rid: dict(_DISCOGS_RELEASE))
+
+    assert _run(orch_cold_start._try_fingerprint_fallback(clip, "vinyl")) is True
+
+
 # ---------------------------------------------------------------------------
 # 5. Below-threshold reject on blind path
 # ---------------------------------------------------------------------------

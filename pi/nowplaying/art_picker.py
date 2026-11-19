@@ -24,7 +24,7 @@ import aiohttp
 
 from nowplaying import art_overrides, coverart
 from nowplaying.discogs import images as dimages
-from nowplaying.net_allowlist import is_allowed_upstream
+from nowplaying.net_allowlist import is_allowed_upstream, open_checked
 
 log = logging.getLogger("nowplaying.art_picker")
 
@@ -126,10 +126,9 @@ async def _caa_url_exists(
         log.debug("art_picker: refusing CAA HEAD on non-allowlisted url: %s", url)
         return False
     try:
-        async with session.head(  # skylos: ignore SKY-D216 — url gated by is_allowed_upstream() above
-            url,
+        async with open_checked(
+            session.head, url,
             timeout=aiohttp.ClientTimeout(total=timeout_s),
-            allow_redirects=True,
         ) as resp:
             return resp.status == 200
     except (aiohttp.ClientError, asyncio.TimeoutError) as e:

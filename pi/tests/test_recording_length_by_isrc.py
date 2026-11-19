@@ -1,5 +1,7 @@
 from __future__ import annotations
 import asyncio
+
+import pytest
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -115,8 +117,8 @@ def test_recording_length_by_isrc_empty_isrc_no_http():
     assert asyncio.run(_run()) is None
 
 
-def test_recording_length_by_isrc_non_200_returns_none():
-    """Non-200 HTTP response → returns None."""
+def test_recording_length_by_isrc_non_200_is_unreachable():
+    """Non-200 HTTP response is not an answer about the ISRC."""
     session_cm = _make_session_mock(429, None)
 
     async def _run():
@@ -132,11 +134,12 @@ def test_recording_length_by_isrc_non_200_returns_none():
             result = await mb_lookup.recording_length_by_isrc("GBAYE0000001")
         return result
 
-    assert asyncio.run(_run()) is None
+    with pytest.raises(mb_lookup.Unreachable):
+        asyncio.run(_run())
 
 
-def test_recording_length_by_isrc_network_error_returns_none():
-    """Network exception → returns None (exception is swallowed)."""
+def test_recording_length_by_isrc_network_error_is_unreachable():
+    """Network exception is not an answer about the ISRC."""
     import aiohttp as _aiohttp
 
     # Raise on __aenter__ of the session context manager
@@ -157,7 +160,8 @@ def test_recording_length_by_isrc_network_error_returns_none():
             result = await mb_lookup.recording_length_by_isrc("GBAYE0000001")
         return result
 
-    assert asyncio.run(_run()) is None
+    with pytest.raises(mb_lookup.Unreachable):
+        asyncio.run(_run())
 
 
 def test_recording_length_by_isrc_empty_recordings_returns_none():

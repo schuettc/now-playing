@@ -41,8 +41,8 @@ HEARTBEAT_INTERVAL_S = 15
 # See docs/features/predicted-advance-duration-guard/.
 PREDICTED_ADVANCE_TOLERANCE_S = 30
 
-# Vinyl silence-driven idle (existing 45s path, now a named
-# constant for parity with the streaming threshold).
+# Vinyl silence-driven idle: seconds of silence before the kiosk goes
+# to the idle clock.
 VINYL_IDLE_DELAY_S = 120
 # Maximum age (seconds) of the last confident recognition before the
 # orchestrator decays state.last_vinyl to None and transitions to
@@ -184,6 +184,9 @@ def _evaluate_sticky_idle(
       "short_circuit" — same source/state/title as when we idled; drop event.
       "clear"         — genuine change; caller clears idled_source/title
                         then proceeds with the event.
+
+    An event without a title is not a title change: a resubscribe on a
+    paused session answers with an empty DIDL before the metadata follows.
     """
     if idled_source is None:
         return "no_op"
@@ -191,24 +194,17 @@ def _evaluate_sticky_idle(
     still_paused_or_stopped = payload_state in (
         "PAUSED_PLAYBACK", "STOPPED", "TRANSITIONING",
     )
-    title_unchanged = idled_title == payload_title
+    title_unchanged = payload_title is None or idled_title == payload_title
     if same_source and still_paused_or_stopped and title_unchanged:
         return "short_circuit"
     return "clear"
 
 
 def _should_pause_capture(state: "State") -> bool:
-    """The orchestrator's view of whether capture should be emitting.
+    """The orchestrator's view of whether capture should be paused.
 
-    Pause when neither vinyl nor (airplay-without-Sonos-metadata) is active:
-    - vinyl: always run capture
-    - airplay with Sonos metadata: pause (Sonos has the answer; UFO202 adds nothing)
-    - airplay without Sonos metadata: run capture (system-audio AirPlay case)
-    - streaming / TV / radio / unknown: pause
+    Capture runs for vinyl only. AirPlay belongs to Sonos with or without
+    metadata (the repoll recovers late metadata), and streaming, TV, radio
+    and unknown never go through the capture device.
     """
-    src = state.sonos_source
-    if src == "vinyl":
-        return False
-    if src == "airplay" and not state.sonos_has_metadata:
-        return False
-    return True
+    return state.sonos_source != "vinyl"

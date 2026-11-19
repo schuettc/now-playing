@@ -76,6 +76,18 @@ class _MockResp:  # skylos: ignore — test fixture stand-in for aiohttp.ClientR
     async def read(self):
         return self._body
 
+    @property
+    def content(self):
+        resp = self
+
+        class _Stream:
+            async def iter_chunked(self, n):
+                body = await resp.read()
+                for i in range(0, len(body), n):
+                    yield body[i:i + n]
+
+        return _Stream()
+
 
 def _mock_session(resp: _MockResp) -> MagicMock:
     sess = MagicMock()
@@ -164,3 +176,28 @@ def test_concurrent_fetches_singleflight():
 
     asyncio.new_event_loop().run_until_complete(race())
     assert fetch_count[0] == 1
+
+
+def test_oversized_body_rejected_and_not_cached():
+    resp = _MockResp(body=b"x" * (artcache.MAX_BYTES + 1))
+    sess = _mock_session(resp)
+    key = artcache.key_for("Artist", "Album")
+    data, _, status = _run(
+        artcache.fetch_and_cache(key, "http://lan:1400/x", session=sess)
+    )
+    assert status == 502
+    assert data is None
+    assert not (artcache.CACHE_DIR / f"{key}.bin").exists()
+
+
+def test_upstream_redirect_is_not_followed_off_the_allowlist():
+    resp = _MockResp(status=302)
+    resp.headers["Location"] = "http://127.0.0.1:8080/admin"
+    sess = _mock_session(resp)
+    key = artcache.key_for("Artist", "Album")
+    data, _, status = _run(
+        artcache.fetch_and_cache(key, "http://192.168.1.40:1400/x", session=sess)
+    )
+    assert (data, status) == (None, 502)
+    assert sess.get.call_count == 1
+    assert sess.get.call_args.kwargs["allow_redirects"] is False

@@ -8,13 +8,14 @@ from aiohttp import WSMsgType, web
 
 from nowplaying.api._paths import log
 
-# Fields that determine whether two consecutive payloads are content-equivalent.
+# Fields that determine whether two consecutive payloads are the same play.
 # Timestamps (ts, track_started_at) and transport metadata (anchor_source,
-# duration_seconds, queue) are intentionally excluded: they change on every
+# duration_seconds) are intentionally excluded: they change on every
 # Sonos UPnP resubscribe NOTIFY even when nothing the kiosk cares about has
 # changed.  Comparing only these fields means a Sonos resubscribe that
 # re-asserts an identical {state, source, title=None, ...} is correctly
-# identified as redundant and suppressed.
+# identified as redundant and suppressed.  ``queue`` is compared separately
+# (see Broadcaster.publish): a changed queue is sent, but is not a new play.
 PUBLISH_CONTENT_FIELDS: tuple[str, ...] = (
     "state",
     "source",
@@ -132,14 +133,23 @@ class Broadcaster:
             self._clients.discard(ws)
 
     async def publish(self, payload: dict[str, Any]) -> bool:
-        """Broadcast the payload to all clients. Returns True if it was
-        published, False if suppressed as content-identical. Callers use
+        """Broadcast the payload to all clients. Returns False when it is
+        content-identical to the last one, True otherwise. Callers use
         the verdict to decide whether the play is a new one or a
-        continuation (see history.record_play's extend_only)."""
+        continuation (see history.record_play's extend_only).
+
+        A content-identical payload is not sent, unless its ``queue``
+        differs: that one is sent so Up Next stays current, and still
+        returns False because the play is the same."""
         async with self._lock:
             prev = self._last
             redundant, reason = _payloads_are_redundant(prev, payload)
-            if redundant:
+            queue_changed = (
+                reason == "content-identical"
+                and prev is not None
+                and prev.get("queue") != payload.get("queue")
+            )
+            if redundant and not queue_changed:
                 log.info(
                     "publish: redundant (skipped) reason=%s source=%s title=%r",
                     reason,
@@ -161,7 +171,7 @@ class Broadcaster:
             payload.get("release_id"),
         )
         if not clients:
-            return True
+            return not redundant
         msg = {"type": "now_playing", "payload": payload}
         dead: list[web.WebSocketResponse] = []
         for ws in clients:
@@ -178,7 +188,7 @@ class Broadcaster:
             async with self._lock:
                 for ws in dead:
                     self._clients.discard(ws)
-        return True
+        return not redundant
 
 
 async def ws_handler(request: web.Request) -> web.WebSocketResponse:

@@ -232,6 +232,23 @@ def test_fallback_insufficient_margin_returns_false(orch_with_lock, monkeypatch,
     assert orch_with_lock.state.unmatched_streak == 5
 
 
+def test_two_refs_of_the_same_track_do_not_veto_each_other(orch_with_lock, monkeypatch, tmp_path):
+    """A clip that straddles two refs of D3 (30 s and 45 s) scores close on
+    both; the runner-up for the margin gate is the best OTHER track."""
+    clip = tmp_path / "clip.wav"
+    clip.write_bytes(b"fake")
+    from nowplaying.vinyl import fingerprint as fp
+    monkeypatch.setattr(fp, "match", lambda *a, **kw: [
+        Hit(ref_id=1, release_id=12345, track_position="D3", hits=80, track_position_s=30.0),
+        Hit(ref_id=2, release_id=12345, track_position="D3", hits=70, track_position_s=45.0),
+        Hit(ref_id=3, release_id=12345, track_position="D2", hits=15, track_position_s=0.0),
+    ])
+    result = _run(orch_with_lock._try_fingerprint_fallback(clip, "vinyl"))
+    assert result is True
+    published = orch_with_lock.bcast.publish.await_args.args[0]
+    assert published["track_position"] == "D3"
+
+
 def test_fallback_passes_threshold_and_margin(orch_with_lock, monkeypatch, tmp_path):
     """top=136, runner_up=15 — well above threshold and 9× the runner_up.
 

@@ -332,6 +332,7 @@ class _ListenerSupervisor:
         max_resub_failures: int,
         find_zone_fn: Callable,
         build_initial_payload_fn: Callable,
+        on_coord_change: Callable | None = None,
     ) -> None:
         self.coord = coord
         self.zone_name = zone_name
@@ -345,6 +346,7 @@ class _ListenerSupervisor:
         self._max_resub_failures = max_resub_failures
         self._find_zone = find_zone_fn
         self._build_initial_payload = build_initial_payload_fn
+        self._on_coord_change = on_coord_change
         self.sub_box: list = [None]
         self._renewal_failed = asyncio.Event()
 
@@ -390,6 +392,8 @@ class _ListenerSupervisor:
                 ) from exc
             self.coord = new_coord
             self.listener.coord = new_coord
+            if self._on_coord_change is not None:
+                self._on_coord_change(new_coord)
             await self.subscribe_once()
         log.info("[sonos] resubscribed successfully")
         try:
