@@ -38,9 +38,9 @@ export function usePrepareNowPlayingProps() {
   useArtPrefetch(data);
 
   const adminAvailable = computeAdminAvailable(data);
-  const modals = useAdminModals(adminAvailable);
-
   const { artId, trackId } = identitiesOf(data);
+  const modals = useAdminModals(adminAvailable, trackId, screen.kind);
+
   const { effectiveArtUrl, artCacheBust, onSaved } = useArtOverride({
     trackId,
     artUrl: data?.art_url,
