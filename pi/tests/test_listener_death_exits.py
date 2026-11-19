@@ -61,7 +61,12 @@ def _run_main(run_listener):
     return runner
 
 
-def test_listener_death_exits_non_zero_after_cleanup():
+@pytest.fixture
+def zone_env(monkeypatch):
+    monkeypatch.setenv("SONOS_ZONE_NAME", "Office")
+
+
+def test_listener_death_exits_non_zero_after_cleanup(zone_env):
     async def dying_listener(_zone, _on_event, _stop, **_kw):
         raise RuntimeError("zone 'Office' not found during re-discovery")
 
@@ -78,7 +83,7 @@ def test_listener_death_exits_non_zero_after_cleanup():
     runner.cleanup.assert_awaited_once()
 
 
-def test_requested_stop_exits_cleanly():
+def test_requested_stop_exits_cleanly(zone_env):
     async def listener(_zone, _on_event, stop, **_kw):
         asyncio.get_running_loop().call_later(0.05, stop.set)
         await stop.wait()
