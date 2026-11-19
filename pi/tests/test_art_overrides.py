@@ -22,7 +22,9 @@ def _run(coro):
 def _isolate_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(art_overrides, "OVERRIDES_DIR", tmp_path)
     monkeypatch.setattr(art_overrides, "INDEX_PATH", tmp_path / "index.json")
+    art_overrides._invalidate_index_cache()
     yield
+    art_overrides._invalidate_index_cache()
 
 
 # Minimum body that passes the orchestrator's "too small to be a real
