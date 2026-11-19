@@ -298,19 +298,49 @@ def _has_multipart_positions(tracks: list[dict]) -> bool:
     return False
 
 
+_SUITE_TITLE_SIM_FLOOR = 0.7
+
+
+def _suite_parent_titles(release_id: int) -> list[str]:
+    """Titles of the release's suite-parent rows (``is_suite_parent=1``)."""
+    try:
+        with open_ro() as con:
+            rows = con.execute(
+                "SELECT title FROM tracks "
+                "WHERE release_id = ? AND is_suite_parent = 1",
+                (release_id,),
+            ).fetchall()
+    except sqlite3.OperationalError as e:
+        logger.debug("_suite_parent_titles: SQL failed for release=%r: %r", release_id, e)
+        return []
+    return [r["title"] or "" for r in rows]
+
+
+def _names_suite_of(release_id: int, title: str) -> bool:
+    """True when ``title`` is the name of one of the release's suites."""
+    norm_title = _normalize(title)
+    if not norm_title:
+        return False
+    return any(
+        _string_sim(norm_title, _normalize(parent)) >= _SUITE_TITLE_SIM_FLOOR
+        for parent in _suite_parent_titles(release_id)
+    )
+
+
 def _suite_fallback(
-    artist: str, preferred_release_id: int,
+    artist: str, title: str, preferred_release_id: int,
 ) -> Optional[dict]:
     """Last-resort match for multi-part suites. Returns the sticky
     release with no matched_track_position so the caller's positional
-    guess is preserved. Declines for plain LPs and for artist mismatch
-    so this can't accidentally lock onto a stale sticky after a real
-    album change.
+    guess is preserved. Declines for plain LPs, for artist mismatch, and
+    for a title that names none of the release's suites.
     """
     rel = get_release(preferred_release_id)
     if rel is None:
         return None
     if not _has_multipart_positions(rel.get("tracks") or []):
+        return None
+    if not _names_suite_of(preferred_release_id, title):
         return None
     norm_target_artist = _normalize(artist)
     norm_rel_artist = _normalize(rel.get("artist") or "")
@@ -329,13 +359,13 @@ def _suite_fallback(
     return rel
 
 
-def _suite_artist_scan(artist: str) -> Optional[dict]:
+def _suite_artist_scan(artist: str, title: str) -> Optional[dict]:
     """Cold-start suite fallback. When no sticky release is available
     (e.g. user dropped directly on D2 "Homecoming" after orchestrator
     restart) scan the collection for releases by this artist whose
-    tracklist has multi-part positions. Returns the release iff there
-    is exactly one such match — multiple matches are ambiguous and we
-    decline rather than guess.
+    tracklist has multi-part positions and a suite named ``title``.
+    Returns the release iff there is exactly one such match — multiple
+    matches are ambiguous and we decline rather than guess.
     """
     norm_target_artist = _normalize(artist)
     if not norm_target_artist:
@@ -366,6 +396,8 @@ def _suite_artist_scan(artist: str) -> Optional[dict]:
         if rel is None:
             continue
         if not _has_multipart_positions(rel.get("tracks") or []):
+            continue
+        if not _names_suite_of(row["release_id"], title):
             continue
         candidates.append(rel)
     if len(candidates) != 1:
@@ -418,9 +450,10 @@ def find_by_artist_title(
     1. Slash-split fallback — Shazam returns medley titles like
        ``"Changeling / Transmission"``; split on ` / ` and pick the
        higher-scoring half. Recurses naturally for 3+ track medleys.
-    2. Suite-name fallback — multi-part suites (American Idiot's
-       "Homecoming" → D1.I–V) appear in Discogs as leaf movements only;
-       Shazam returns the parent suite name. Two flavors:
+    2. Suite-name fallback — for multi-part suites (American Idiot's
+       "Homecoming" → D1.I–V) Shazam returns the parent suite name.
+       Both flavors require the title to name a suite-parent row of the
+       release they return:
          a. Sticky path — when a ``preferred_release_id`` is in flight
             and it's a multi-part release with matching artist, keep
             it so the kiosk preserves album art / tracklist context.
@@ -463,10 +496,10 @@ def find_by_artist_title(
             )
             return winner
     if preferred_release_id is not None:
-        sticky = _suite_fallback(artist, preferred_release_id)
+        sticky = _suite_fallback(artist, title, preferred_release_id)
         if sticky is not None and _album_matches(album, sticky.get("title")):
             return sticky
-    scanned = _suite_artist_scan(artist)
+    scanned = _suite_artist_scan(artist, title)
     if scanned is not None and _album_matches(album, scanned.get("title")):
         return scanned
     return None
@@ -520,7 +553,8 @@ def _rank_candidates(
     sticky_bonus: int = 25,
 ) -> list[tuple[int, int, int, dict]]:
     """Score each candidate WITH sticky bonus and rank descending by
-    (score_with_sticky, year). Drops anything below the 60 floor.
+    (score_with_sticky, year). The 60 floor is implied by the similarity
+    floors in ``_score_candidate`` and drops nothing they let through.
     Returns a list of (score_with_sticky, base_score, year, row) tuples."""
     scored: list[tuple[int, int, int, dict]] = []
     for c in candidates:
@@ -532,6 +566,29 @@ def _rank_candidates(
         scored.append((score_with_sticky, base_with_biases, year, c["row"]))
     scored.sort(key=lambda t: (t[0], t[2]), reverse=True)
     return scored
+
+
+def _prefer_exact_title(
+    scored: list[tuple[int, int, int, dict]], title: str,
+) -> tuple[int, int, int, dict]:
+    """The top entry, unless other tracks of its release share its
+    normalised title ("... (Parts 1-5)" / "... (Parts 6-9)", a reprise):
+    then the one whose full title is closest to ``title``. An equal
+    closeness keeps the ranked order, so the side-first bonus decides."""
+    best = scored[0]
+    norm_best = _normalize(best[3]["track_title"] or "")
+    peers = [
+        entry for entry in scored
+        if entry[3]["release_id"] == best[3]["release_id"]
+        and _normalize(entry[3]["track_title"] or "") == norm_best
+    ]
+    raw_title = title.lower().strip()
+    return max(
+        peers,
+        key=lambda entry: _string_sim(
+            raw_title, (entry[3]["track_title"] or "").lower().strip(),
+        ),
+    )
 
 
 def _collect_alternates(
@@ -585,13 +642,11 @@ def _find_by_artist_title_primary(
             - First-on-side bonus: +15 (A1/B1/... — the dominant disambiguation
               signal since users almost always start records from the beginning).
             - Sticky-release bonus: +25 when the candidate matches the caller's
-              preferred_release_id (the album currently in flight). Big enough
-              to flip the choice when an equivalent-scoring alternate exists,
-              not big enough to override a genuinely better artist/title match.
-            - Vinyl-format bonus: +5 (slight LP preference).
-            - Compilation penalty: -3 (small tiebreaker for the narrow case
-              where the same song is A1 on both an LP and a compilation).
-      3. Among remaining ties, prefer the most recent vinyl pressing (highest year).
+              preferred_release_id (the album currently in flight). It
+              outweighs the side-first bonus.
+      3. Among remaining ties, prefer the most recent pressing (highest year).
+      4. Tracks of the winning release that share its normalised title
+         are told apart by their full titles (``_prefer_exact_title``).
 
     Returns the best release dict (with tracks) or None.
     """
@@ -623,9 +678,6 @@ def _find_by_artist_title_primary(
         )
         return None
 
-    # Two-pass scoring so the sticky bonus can be downgraded when a non-sticky
-    # candidate has a stronger physical signal (side-first). Single-pass would let
-    # sticky dominate even when the user is clearly on a different album.
     candidates = [
         cand for r in rows
         if _album_matches(album, r["album"])
@@ -641,7 +693,7 @@ def _find_by_artist_title_primary(
     scored = _rank_candidates(candidates)
     if not scored:
         return None
-    best = scored[0]
+    best = _prefer_exact_title(scored, title)
     full = get_release(best[3]["release_id"])
     if full is None:
         return None

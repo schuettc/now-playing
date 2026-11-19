@@ -56,6 +56,11 @@ def _get_mb_rate_limit() -> asyncio.Semaphore:
 _SIDE_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 
+class Unreachable(Exception):
+    """MusicBrainz gave no answer (transport error, or a status other than
+    200/404). Not a miss: nothing may be negative-cached on it."""
+
+
 def _norm(s: str) -> str:
     return (s or "").strip().lower()
 
@@ -162,9 +167,10 @@ def _pick_recording_length(recordings: list[dict]) -> int | None:
 
 async def recording_length_by_isrc(isrc: str, *, timeout_s: float = 15.0) -> int | None:
     """Look up the recognized recording's length (seconds) by ISRC via
-    MusicBrainz recording search. Returns None on no ISRC, no match, no
-    length, or any network/parse error. Distinct from `lookup_by_isrc`
-    (which walks to a release); this only reads the recording length."""
+    MusicBrainz recording search. Returns None on no ISRC, no match or no
+    length; raises ``Unreachable`` on a network/parse error or non-200.
+    Distinct from `lookup_by_isrc` (which walks to a release); this only
+    reads the recording length."""
     if not isrc:
         return None
     query = urllib.parse.quote(f"isrc:{isrc}")
@@ -179,13 +185,13 @@ async def recording_length_by_isrc(isrc: str, *, timeout_s: float = 15.0) -> int
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(url, headers=headers) as resp:  # skylos: ignore SKY-D216 — url built from hardcoded musicbrainz.org template; only ISRC interpolated via urllib.quote
                     if resp.status != 200:
-                        log.info("isrc-duration: isrc=%s status=%d", isrc, resp.status)
-                        return None
+                        raise Unreachable(f"status={resp.status}")
                     data = await resp.json()
             await asyncio.sleep(1.0)  # enforce 1 req/s inside the semaphore
-    except Exception as e:  # noqa: BLE001 — network/parse: log + None
-        log.info("isrc-duration: isrc=%s lookup failed: %r", isrc, e)
-        return None
+    except Unreachable:
+        raise
+    except Exception as e:  # noqa: BLE001 — network/parse: not an answer
+        raise Unreachable(repr(e)) from e
     return _pick_recording_length(data.get("recordings") or [])
 
 
@@ -226,7 +232,10 @@ async def lookup_by_isrc(
     release_mbid = _pick_release_from_recording_search(data)
     if not release_mbid:
         return None
-    return await _fetch_release_full(release_mbid, timeout_s=timeout_s)
+    try:
+        return await _fetch_release_full(release_mbid, timeout_s=timeout_s)
+    except Unreachable:
+        return None
 
 
 def _pick_release_from_recording_search(data: dict) -> Optional[str]:
@@ -251,7 +260,8 @@ async def _fetch_release_full(
     timeout_s: float,
 ) -> Optional[dict]:
     """Fetch a MB release with media/tracks + artist-credit and synthesize
-    the discovery-release dict shape.
+    the discovery-release dict shape. None when MusicBrainz has no such
+    release or it has no tracks; raises ``Unreachable`` otherwise.
     """
     url = (
         f"https://musicbrainz.org/ws/2/release/{release_mbid}"
@@ -267,13 +277,15 @@ async def _fetch_release_full(
                         "discovery: release %s fetch status=%d",
                         release_mbid, resp.status,
                     )
-                    return None
+                    if resp.status == 404:
+                        return None
+                    raise Unreachable(f"status={resp.status}")
                 data = await resp.json()
     except (aiohttp.ClientError, asyncio.TimeoutError) as e:
         log.info(
             "discovery: release %s fetch failed: %r", release_mbid, e,
         )
-        return None
+        raise Unreachable(repr(e)) from e
 
     artist = _extract_artist_credit(data)
     album = data.get("title") or ""
@@ -322,7 +334,9 @@ async def lookup_by_artist_album(
     set) or the simpler ``fetch_release_mbid`` first-match path, then
     fetches the full release for tracklist + durations.
 
-    Returns the same shape as :func:`lookup_by_isrc` or None.
+    Returns the same shape as :func:`lookup_by_isrc` or None. A miss is
+    negative-cached for ``_NEGATIVE_TTL_S``; a release fetch that could
+    not reach MusicBrainz is not.
     """
     if not artist or not album:
         return None
@@ -341,7 +355,10 @@ async def lookup_by_artist_album(
         _mark_negative(artist, album)
         return None
 
-    out = await _fetch_release_full(release_mbid, timeout_s=timeout_s)
+    try:
+        out = await _fetch_release_full(release_mbid, timeout_s=timeout_s)
+    except Unreachable:
+        return None
     if out is None:
         _mark_negative(artist, album)
     return out
@@ -494,6 +511,7 @@ __all__ = [
     "lookup_by_isrc",
     "lookup_by_artist_album",
     "recording_length_by_isrc",
+    "Unreachable",
     "persist",
     "find_discovered_release_by_artist_album",
 ]

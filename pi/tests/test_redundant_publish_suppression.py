@@ -466,3 +466,36 @@ async def test_mutated_same_dict_not_suppressed(bcast: Broadcaster) -> None:
     second_payload = ws.send_json.await_args_list[1].args[0]["payload"]
     assert second_payload["title"] == "Solaris"
     assert second_payload["track_position"] == "B9"
+
+
+# ---------------------------------------------------------------------------
+# A changed queue reaches the kiosk without counting as a new play
+# ---------------------------------------------------------------------------
+
+def _streaming(queue: list[dict]) -> dict:
+    return {
+        "state": "PLAYING", "source": "streaming", "title": "Song",
+        "artist": "Artist", "match_method": "sonos-didl", "queue": queue,
+    }
+
+
+def test_queue_change_is_sent_but_is_not_a_new_play() -> None:
+    import asyncio
+
+    async def go():
+        from nowplaying.api.broadcaster import Broadcaster
+
+        bcast = Broadcaster()
+        ws = MagicMock()
+        ws.closed = False
+        ws.send_json = AsyncMock()
+        bcast._clients.add(ws)
+        first = await bcast.publish(_streaming([{"title": "Next"}]))
+        second = await bcast.publish(_streaming([{"title": "Added"}, {"title": "Next"}]))
+        third = await bcast.publish(_streaming([{"title": "Added"}, {"title": "Next"}]))
+        return first, second, third, ws.send_json.await_count, bcast._last["queue"]
+
+    first, second, third, sends, last_queue = asyncio.run(go())
+    assert (first, second, third) == (True, False, False)
+    assert sends == 2
+    assert last_queue == [{"title": "Added"}, {"title": "Next"}]

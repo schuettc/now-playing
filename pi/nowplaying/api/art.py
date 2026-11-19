@@ -93,7 +93,8 @@ async def art_by_name_handler(request: web.Request) -> web.StreamResponse:
     is keyed strictly by ``release_id`` (see ``pi/nowplaying/art_cache.py``),
     so there's no on-disk cache for non-matched tracks. The kiosk
     only fetches this URL *after* the user has placed an override
-    (per ``_rewrite_art_url_for_overrides`` in main.py), so a 404
+    (per ``_rewrite_art_url_for_overrides`` in
+    ``orchestrator/_publish_enrichment.py``), so a 404
     here means the override was deleted out from under the rewrite —
     self-heal and return.
     """
@@ -166,7 +167,7 @@ async def art_candidates_handler(request: web.Request) -> web.StreamResponse:
     current_url_q = (request.query.get("current_url") or "").strip() or None
     rid, artist, album = await _resolve_rid_or_artist_album(rid_raw, artist_q, album_q)
 
-    session = request.app.get("lyrics_session")
+    session = request.app.get("http_session")
     if session is None:
         raise web.HTTPInternalServerError(reason="no session")
 
@@ -234,7 +235,7 @@ async def art_cache_handler(request: web.Request) -> web.StreamResponse:
         raise web.HTTPNotFound()
     if not _is_allowed_upstream(upstream):
         raise web.HTTPBadRequest(reason="upstream not in allowlist")
-    session = request.app.get("lyrics_session")  # reused: same shared session
+    session = request.app.get("http_session")
     if session is None:
         raise web.HTTPInternalServerError(reason="no session")
     data, ctype, status = await artcache.fetch_and_cache(

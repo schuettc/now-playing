@@ -38,7 +38,7 @@ def test_get_release_returns_none_when_db_missing(missing_db):
 
 
 def test_suite_artist_scan_returns_none_when_db_missing(missing_db):
-    assert catalog._suite_artist_scan("Foo Fighters") is None
+    assert catalog._suite_artist_scan("Foo Fighters", "Everlong") is None
 
 
 def test_rid_to_album_returns_none_when_db_missing(missing_db):

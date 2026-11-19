@@ -61,7 +61,7 @@ async def art_override_post_handler(request: web.Request) -> web.Response:
         parsed["rid_raw"], parsed["artist"], parsed["album"], epoch,
     )
 
-    session = request.app.get("lyrics_session")
+    session = request.app.get("http_session")
     if session is None:
         raise web.HTTPInternalServerError(reason="no session")
 

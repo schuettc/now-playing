@@ -48,6 +48,21 @@ if TYPE_CHECKING:
 log = logging.getLogger("nowplaying.main")
 
 
+def _best_other_track_hits(hits) -> int:
+    """Score of the strongest hit on a different track than ``hits[0]``,
+    0 when there is none. Several refs of one track overlap the same clip,
+    so they are not rivals of each other."""
+    top = hits[0]
+    top_track = (top.release_id, top.mbid, top.track_position)
+    return max(
+        (
+            h.hits for h in hits[1:]
+            if (h.release_id, h.mbid, h.track_position) != top_track
+        ),
+        default=0,
+    )
+
+
 def _seed_track_duration(lv: dict, track_position: str) -> float | None:
     """Duration (seconds) of the confirmed track, for the MBID seed drive.
     Prefer the tracklist entry matching ``track_position``; fall back to a
@@ -104,28 +119,19 @@ class HeartbeatHandlersMixin:
 
     async def on_heartbeat(self, clip_path: Path, level_db: float) -> None:
         state = self.state
-        audio_source_label = self._classify_heartbeat_source(
-            state.sonos_source, has_metadata=state.sonos_has_metadata,
-        )
+        # Primary gate: only vinyl runs the cascade (Shazam, fingerprint,
+        # NEEDS_ID, predictions). For every other source no rate-limit
+        # budget is spent and no streak, prediction or idle state moves.
+        # The publish-time guards in _publish_shazam_match /
+        # _publish_needs_id / _try_fingerprint_fallback are
+        # defence-in-depth.
+        audio_source_label = self._classify_heartbeat_source(state.sonos_source)
         if audio_source_label is None:
             return
         # Record the heartbeat level for the dead-air suppression gate.
         # Bounded by the deque's maxlen so no manual trim is needed.
         # See docs/features/llm-track-guess-suppress-on-dead-air/.
         state.recent_heartbeat_levels.append(level_db)
-        # For airplay/streaming sources Sonos metadata is authoritative.
-        # The cascade (Shazam, fingerprint, NEEDS_ID, predictions) must be
-        # entirely inert — not even rate-limit budget should be spent. The
-        # publish-time guards in _publish_shazam_match / _publish_needs_id /
-        # _try_fingerprint_fallback are defence-in-depth; this early return is
-        # the primary gate that stops the cascade and prevents streak
-        # accumulation, prediction advances, and idle escalation.
-        if state.sonos_source in ("airplay", "streaming"):
-            log.debug(
-                "heartbeat skipped: sonos_source=%s is Sonos-authoritative",
-                state.sonos_source,
-            )
-            return
         # Music-level heartbeat means audio is back — retract any pending idle
         # before recognize starts so a slow Shazam call can't lose the race.
         if _is_music_level(level_db):
@@ -185,10 +191,10 @@ class HeartbeatHandlersMixin:
         cross-heartbeat agreement check for results that don't resolve to
         a Discogs release.
 
-        Shazam-hit-driven fingerprint promotion was removed — there is no
-        value in seeding fp_refs from Shazam because Shazam will recognize
-        those tracks reliably on replay. Promotion is pin-driven only
-        (see ``_schedule_coverage_promotion``).
+        A Shazam hit does not promote a ref itself. Promotion happens in
+        ``_schedule_coverage_promotion``, driven by a pin, a fingerprint
+        anchor, or (for the discovered MBID store) a recent Shazam
+        confirmation.
         """
         state = self.state
         rid = result.get("release_id")
@@ -497,10 +503,11 @@ class HeartbeatHandlersMixin:
             )
             return await self._confirmation_reject_with_side_effects(state, wav_bytes, level_db)
         # ── Confidence gate 2: top-2 margin requirement ─────────────────
-        if len(hits) >= 2 and top.hits < 2 * hits[1].hits:
+        runner_up = _best_other_track_hits(hits)
+        if top.hits < 2 * runner_up:
             log.info(
                 "fingerprint: insufficient margin (top=%d runner_up=%d) — treating as no match",
-                top.hits, hits[1].hits,
+                top.hits, runner_up,
             )
             return await self._confirmation_reject_with_side_effects(state, wav_bytes, level_db)
         log.info(
@@ -631,8 +638,7 @@ class HeartbeatHandlersMixin:
         (requires a locked tracklist). The blind rejection path therefore has no
         side effects beyond returning False.
 
-        Read-only: a blind match never auto-promotes refs to ``fp_refs``.
-        Promotion stays pin-driven only.
+        Read-only: this scan does not promote refs to ``fp_refs``.
         """
         log.info("fingerprint: blind scan — no lock, scanning all refs")
         state = self.state
@@ -650,10 +656,11 @@ class HeartbeatHandlersMixin:
             )
             return False
         # ── Confidence gate 2: top-2 margin requirement ─────────────────
-        if len(hits) >= 2 and top.hits < 2 * hits[1].hits:
+        runner_up = _best_other_track_hits(hits)
+        if top.hits < 2 * runner_up:
             log.info(
                 "fingerprint: blind insufficient margin (top=%d runner_up=%d) — treating as no match",
-                top.hits, hits[1].hits,
+                top.hits, runner_up,
             )
             return False
         log.info(
@@ -878,21 +885,15 @@ class HeartbeatHandlersMixin:
             ),
         )
 
-    def _classify_heartbeat_source(
-        self, src: str | None, *, has_metadata: bool,
-    ) -> str | None:
+    def _classify_heartbeat_source(self, src: str | None) -> str | None:
         """Return the audio-source label to attach to a heartbeat recognition,
-        or None when this heartbeat should be ignored. Vinyl always recognizes;
-        AirPlay recognizes only when Sonos has no track metadata (system audio).
+        or None when this heartbeat should be ignored. Only vinyl is
+        recognized; AirPlay and streaming are never recognized from audio,
+        with or without Sonos track metadata.
         """
         if src == "vinyl":
             return "vinyl"
-        if src == "airplay" and not has_metadata:
-            return "airplay"
-        log.info(
-            "ignoring heartbeat; sonos source is %s (has_metadata=%s)",
-            src, has_metadata,
-        )
+        log.info("ignoring heartbeat; sonos source is %s", src)
         return None
 
     def _retract_pending_idle_for_music(self, level_db: float) -> None:

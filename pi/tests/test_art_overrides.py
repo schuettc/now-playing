@@ -22,7 +22,9 @@ def _run(coro):
 def _isolate_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(art_overrides, "OVERRIDES_DIR", tmp_path)
     monkeypatch.setattr(art_overrides, "INDEX_PATH", tmp_path / "index.json")
+    art_overrides._invalidate_index_cache()
     yield
+    art_overrides._invalidate_index_cache()
 
 
 # Minimum body that passes the orchestrator's "too small to be a real
@@ -293,3 +295,31 @@ def test_key_normalization_matches_artcache():
     a = art_overrides.key_for("The Beatles", "Rubber Soul")
     b = artcache.key_for("The Beatles", "Rubber Soul")
     assert a == b
+
+
+def _fail_index_write(monkeypatch):
+    def boom(_index):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(art_overrides, "_atomic_write_index", boom)
+
+
+def test_failed_index_write_on_set_leaves_memory_unchanged(monkeypatch):
+    _fail_index_write(monkeypatch)
+    with pytest.raises(art_overrides.OverrideError):
+        _run(art_overrides.set(
+            "A", "B", "https://i.discogs.com/x.jpg", "discogs-master",
+            session=_Session(_Resp()),
+        ))
+    assert art_overrides.get("A", "B") is None
+
+
+def test_failed_index_write_on_clear_keeps_the_override(monkeypatch):
+    _run(art_overrides.set(
+        "A", "B", "https://i.discogs.com/x.jpg", "discogs-master",
+        session=_Session(_Resp()),
+    ))
+    _fail_index_write(monkeypatch)
+    assert art_overrides.clear("A", "B") is False
+    ov = art_overrides.get("A", "B")
+    assert ov is not None
+    assert Path(ov.local_path).exists()

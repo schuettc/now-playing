@@ -124,7 +124,7 @@ def _build_blind_fingerprint_payload(  # skylos: ignore SKY-Q301 SKY-C304 — Wh
         "ts": recognize_proto.now_iso(),
         "release_id": top.release_id,
         "artist": rel.get("artist"),
-        "album": rel.get("title"),
+        "album": rel.get("disambiguated_album") or rel.get("title"),
         "year": rel.get("year"),
         "label": rel.get("label"),
         "catno": rel.get("catno"),

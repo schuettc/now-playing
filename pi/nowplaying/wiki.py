@@ -165,6 +165,11 @@ def store_summary(release_id: int | str, payload: dict[str, Any]) -> None:
         log.warning("wiki cache write failed for %s: %r", release_id, e)
 
 
+class _Unreachable(Exception):
+    """Wikipedia could not be asked: transport error or a non-404 failure
+    status. Says nothing about whether the article exists."""
+
+
 async def _rest_summary(
     title: str,
     *,
@@ -173,7 +178,9 @@ async def _rest_summary(
 ) -> Optional[dict[str, Any]]:
     """Fetch the REST summary for a specific Wikipedia page title.
 
-    Returns the parsed JSON dict or None on 404 / non-OK / transport error.
+    Returns the trimmed summary dict, or None when Wikipedia has no usable
+    page under that title. Raises ``_Unreachable`` on a transport error or
+    any status other than 200 / 404.
     Disambiguation pages are treated as misses — they don't have a useful
     extract and we don't want to render "X may refer to:" on the kiosk.
 
@@ -186,12 +193,15 @@ async def _rest_summary(
     url = REST_SUMMARY_URL.format(title=urllib.parse.quote(title, safe=""))
     try:
         async with session.get(url) as resp:  # skylos: ignore SKY-D216 — url built from module-level REST_SUMMARY_URL constant + urllib-quoted title; host is fixed (en.wikipedia.org)
-            if resp.status != 200:
+            if resp.status == 404:
                 return None
+            if resp.status != 200:
+                log.warning("wiki rest summary for %r: status %s", title, resp.status)
+                raise _Unreachable(title)
             data = await resp.json()
     except (aiohttp.ClientError, asyncio.TimeoutError) as e:
         log.warning("wiki rest summary failed for %r: %r", title, e)
-        return None
+        raise _Unreachable(title) from e
     if data.get("type") == "disambiguation":
         return None
     extract = data.get("extract")
@@ -217,7 +227,9 @@ async def _opensearch_title(
     session: aiohttp.ClientSession,
 ) -> Optional[str]:
     """Use the MediaWiki opensearch endpoint to find the best matching page
-    title for `query`. Returns the top result's title, or None."""
+    title for `query`. Returns the top result's title, or None when the
+    search has no result. Raises ``_Unreachable`` on a transport error or
+    a non-200 status."""
     params = {
         "action": "opensearch",
         "search": query,
@@ -228,11 +240,12 @@ async def _opensearch_title(
     try:
         async with session.get(OPENSEARCH_URL, params=params) as resp:  # skylos: ignore SKY-D216 — OPENSEARCH_URL is a module-level constant (en.wikipedia.org/w/api.php); host is fixed, not user-controlled
             if resp.status != 200:
-                return None
+                log.warning("wiki opensearch for %r: status %s", query, resp.status)
+                raise _Unreachable(query)
             data = await resp.json()
     except (aiohttp.ClientError, asyncio.TimeoutError) as e:
         log.warning("wiki opensearch failed for %r: %r", query, e)
-        return None
+        raise _Unreachable(query) from e
     # opensearch shape: [query, [titles], [descs], [urls]]
     try:
         titles = data[1]
@@ -277,27 +290,38 @@ async def fetch_summary(
             f"{album} (album)",
             album,
         ]
+        unreachable = False
         for title in candidates:
-            payload = await _rest_summary(
-                title, session=session, artist=artist,
-            )
+            try:
+                payload = await _rest_summary(
+                    title, session=session, artist=artist,
+                )
+            except _Unreachable:
+                unreachable = True
+                continue
             if payload is not None:
                 return payload
 
         # Step 2: opensearch fallback. The resulting title is also gated
         # on the artist verifier so a high-scoring but wrong-artist match
         # gets rejected.
-        found = await _opensearch_title(
-            f"{artist} {album} album", session=session,
-        )
-        if found:
-            payload = await _rest_summary(
-                found, session=session, artist=artist,
+        try:
+            found = await _opensearch_title(
+                f"{artist} {album} album", session=session,
             )
-            if payload is not None:
-                return payload
+            if found:
+                payload = await _rest_summary(
+                    found, session=session, artist=artist,
+                )
+                if payload is not None:
+                    return payload
+        except _Unreachable:
+            unreachable = True
 
-    _mark_negative(artist, album)
+    # Only a miss on every attempt is remembered; a lookup that could not
+    # reach Wikipedia is retried on the next request.
+    if not unreachable:
+        _mark_negative(artist, album)
     return None
 
 
@@ -310,9 +334,9 @@ async def get_or_fetch(
 ) -> Optional[dict[str, Any]]:
     """Return the cached blurb for `release_id`, fetching+storing on miss.
 
-    Returns None if Wikipedia has nothing for this album. Negative results
-    are *not* persisted to disk (they live in the in-memory negative cache
-    for 7 days) — that lets a daemon restart re-try a missed album cheaply
+    Returns None if Wikipedia has nothing for this album or could not be
+    reached. Definitive misses are *not* persisted to disk (they live in
+    the in-memory negative cache for 7 days) — that lets a daemon restart re-try a missed album cheaply
     in case Wikipedia gained coverage.
     """
     cached = cached_summary(release_id)
