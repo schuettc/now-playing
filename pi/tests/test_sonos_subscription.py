@@ -379,3 +379,41 @@ async def test_resubscribe_reconciles_actual_state():
         f"got sources: {[e.get('source') for e in events_received]}"
     )
     assert airplay_events[-1]["title"] == "Destroyed By Hippie Powers"
+
+
+# ---------------------------------------------------------------------------
+# The coordinator in use is handed to the caller, at subscribe and again
+# when a resubscribe has to re-discover the zone.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_rediscovered_coordinator_is_handed_to_the_caller():
+    from nowplaying.sonos import listener as _listener
+
+    old_coord, _ = _make_fake_coord()
+    new_coord, _ = _make_fake_coord()
+    new_coord.ip_address = "192.168.1.222"
+    new_coord.get_current_track_info = MagicMock(return_value={})
+    # First subscribe (boot) succeeds; the resubscribe on the old address fails.
+    old_coord.avTransport.subscribe = AsyncMock(
+        side_effect=[old_coord.avTransport.subscribe.return_value, OSError("gone")],
+    )
+    zones = iter([old_coord, new_coord])
+    seen: list = []
+    stop = asyncio.Event()
+
+    with (
+        patch.object(_listener, "find_zone", side_effect=lambda _name: next(zones)),
+        patch.object(_listener.events_asyncio.event_listener, "async_stop", new=AsyncMock()),
+        patch.object(_listener, "_STARTUP_PROBE_TIMEOUT_S", 999.0),
+        patch.object(_listener, "_WATCHDOG_INTERVAL_S", 0.05),
+        patch.object(_listener, "_DEAD_LISTENER_TIMEOUT_S", 0.01),
+    ):
+        task = asyncio.create_task(
+            _listener.run_listener("Office", AsyncMock(), stop, on_coord=seen.append),
+        )
+        await asyncio.sleep(0.2)
+        stop.set()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert seen[:2] == [old_coord, new_coord]

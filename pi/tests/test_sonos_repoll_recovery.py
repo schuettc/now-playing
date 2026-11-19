@@ -47,6 +47,7 @@ def _make_orch(
     o.state.last_vinyl = last_vinyl
     o.state.idled_source = None
     o.state.idled_title = None
+    o.sonos_coord = mock.MagicMock(name="coord")
     o.on_sonos_event = mock.AsyncMock()
     return o
 
@@ -58,7 +59,7 @@ def test_repoll_recovers_airplay_that_started_without_metadata():
         "nowplaying.orchestrator._publish_enrichment.poll_track",
         new=mock.AsyncMock(return_value=dict(TRACK)),
     ):
-        _run(o._run_repoll_tick(mock.MagicMock()))
+        _run(o._run_repoll_tick())
     o.on_sonos_event.assert_awaited_once()
     ev = o.on_sonos_event.await_args.args[0]
     assert ev["title"] == "Someday You Will Be Loved"
@@ -78,7 +79,7 @@ def test_repoll_reports_the_real_transport_state_when_paused():
         "nowplaying.orchestrator._publish_enrichment.poll_track",
         new=mock.AsyncMock(return_value=dict(TRACK)),
     ):
-        _run(o._run_repoll_tick(mock.MagicMock()))
+        _run(o._run_repoll_tick())
     ev = o.on_sonos_event.await_args.args[0]
     assert ev["state"] == "PAUSED_PLAYBACK"
 
@@ -96,7 +97,7 @@ def test_repoll_does_not_wake_a_session_that_idled_while_paused():
         "nowplaying.orchestrator._publish_enrichment.poll_track",
         new=mock.AsyncMock(return_value=dict(TRACK)),
     ):
-        _run(o._run_repoll_tick(mock.MagicMock()))
+        _run(o._run_repoll_tick())
     o.on_sonos_event.assert_not_awaited()
 
 
@@ -107,7 +108,7 @@ def test_repoll_polls_even_when_has_metadata_is_false():
     with mock.patch(
         "nowplaying.orchestrator._publish_enrichment.poll_track", new=poll,
     ):
-        _run(o._run_repoll_tick(mock.MagicMock()))
+        _run(o._run_repoll_tick())
     poll.assert_awaited_once()
 
 
@@ -120,7 +121,7 @@ def test_repoll_noop_when_sonos_genuinely_has_no_metadata():
         "nowplaying.orchestrator._publish_enrichment.poll_track",
         new=mock.AsyncMock(return_value=None),
     ):
-        _run(o._run_repoll_tick(mock.MagicMock()))
+        _run(o._run_repoll_tick())
     o.on_sonos_event.assert_not_awaited()
 
 
@@ -132,7 +133,7 @@ def test_repoll_skipped_for_non_sonos_sources(source):
     with mock.patch(
         "nowplaying.orchestrator._publish_enrichment.poll_track", new=poll,
     ):
-        _run(o._run_repoll_tick(mock.MagicMock()))
+        _run(o._run_repoll_tick())
     poll.assert_not_awaited()
     o.on_sonos_event.assert_not_awaited()
 
@@ -147,7 +148,7 @@ def test_repoll_does_not_republish_unchanged_airplay_track():
         "nowplaying.orchestrator._publish_enrichment.poll_track",
         new=mock.AsyncMock(return_value=dict(TRACK)),
     ):
-        _run(o._run_repoll_tick(mock.MagicMock()))
+        _run(o._run_repoll_tick())
     o.on_sonos_event.assert_not_awaited()
 
 
@@ -162,5 +163,35 @@ def test_repoll_still_reemits_unchanged_streaming_for_queue_advance():
         "nowplaying.orchestrator._publish_enrichment.poll_track",
         new=mock.AsyncMock(return_value=dict(TRACK)),
     ):
-        _run(o._run_repoll_tick(mock.MagicMock()))
+        _run(o._run_repoll_tick())
     o.on_sonos_event.assert_awaited_once()
+
+
+def test_repoll_polls_the_coordinator_currently_held():
+    """The listener replaces the coordinator after a re-discovery; the
+    next tick must poll the new one, and none at all while there is none."""
+    o = _make_orch("airplay", has_metadata=True, last_vinyl=None)
+    poll = mock.AsyncMock(return_value=dict(TRACK))
+    with mock.patch(
+        "nowplaying.orchestrator._publish_enrichment.poll_track", new=poll,
+    ):
+        o.sonos_coord = None
+        _run(o._run_repoll_tick())
+        poll.assert_not_awaited()
+
+        rediscovered = mock.MagicMock(name="rediscovered")
+        o.adopt_sonos_coord(rediscovered)
+        _run(o._run_repoll_tick())
+    poll.assert_awaited_once_with(rediscovered)
+
+
+def test_repoll_loop_keeps_running_without_a_coordinator_at_boot():
+    o = _make_orch("airplay", has_metadata=True, last_vinyl=None)
+    o.sonos_coord = None
+    o.stop = asyncio.Event()
+    o._run_repoll_tick = mock.AsyncMock(side_effect=lambda: o.stop.set())
+    with mock.patch(
+        "nowplaying.orchestrator._publish_enrichment.HEARTBEAT_INTERVAL_S", 0.01,
+    ):
+        _run(asyncio.wait_for(o.sonos_repoll_loop(), timeout=2))
+    o._run_repoll_tick.assert_awaited_once()

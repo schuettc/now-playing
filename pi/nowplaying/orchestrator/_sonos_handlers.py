@@ -1,6 +1,6 @@
 """SonosHandlersMixin — Sonos and capture event handlers.
 
-Contains: on_sonos_event, _handle_sticky_idle, _apply_source_transition,
+Contains: adopt_sonos_coord, on_sonos_event, _handle_sticky_idle, _apply_source_transition,
 _maybe_cancel_idle_on_resume, _reconcile_capture_emit,
 _recover_unmatched_from_cache, _reset_for_non_idle_source,
 _maybe_arm_streaming_idle, on_capture_state, _handle_capture_silent,
@@ -36,6 +36,12 @@ class SonosHandlersMixin:
     ``self.sonos_coord`` — owned by ``Orchestrator.__init__``.
     No ``__init__`` defined here.
     """
+
+    def adopt_sonos_coord(self, coord) -> None:
+        """Take the coordinator the listener is subscribed to, so the
+        repoll and queue polls follow the zone when it is re-discovered.
+        """
+        self.sonos_coord = coord
 
     async def on_sonos_event(self, ev: dict) -> None:
         state = self.state

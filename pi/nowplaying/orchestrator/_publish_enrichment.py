@@ -399,9 +399,6 @@ class PublishEnrichmentMixin:
         through to. TV / radio push their own events.
         """
         stop = self.stop
-        sonos_coord = self.sonos_coord
-        if sonos_coord is None:
-            return
         while not stop.is_set():
             try:
                 await asyncio.wait_for(stop.wait(), timeout=HEARTBEAT_INTERVAL_S)
@@ -409,9 +406,9 @@ class PublishEnrichmentMixin:
             except asyncio.TimeoutError:
                 # Expected: heartbeat-interval elapsed, time to repoll.
                 log.debug("sonos_repoll_loop: heartbeat interval elapsed; running tick")
-            await self._run_repoll_tick(sonos_coord)
+            await self._run_repoll_tick()
 
-    async def _run_repoll_tick(self, sonos_coord) -> None:
+    async def _run_repoll_tick(self) -> None:
         """One iteration of the sonos repoll loop: gate on source, poll
         Sonos, and dispatch a synthetic event when the polled track
         differs from what's currently published (or unconditionally on
@@ -419,9 +416,13 @@ class PublishEnrichmentMixin:
         no metadata has arrived yet — that is exactly the state this loop
         exists to recover from. The event carries the transport state of
         the last real NOTIFY, so a poll never turns a paused session into
-        a playing one.
+        a playing one. Polls the coordinator the listener currently holds
+        (see ``adopt_sonos_coord``); a no-op until there is one.
         """
         state = self.state
+        sonos_coord = self.sonos_coord
+        if sonos_coord is None:
+            return
         if state.sonos_source not in ("airplay", "streaming"):
             return
         # Deliberately NOT gated on state.sonos_has_metadata. That flag

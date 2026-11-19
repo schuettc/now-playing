@@ -119,15 +119,16 @@ async def main_async() -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)
 
-    # Pre-discover the Sonos coordinator so the airplay re-poll loop can
-    # poll without re-running zone discovery on every tick.
+    # Pre-discover the Sonos coordinator so the initial-state event below
+    # can already poll the queue. The listener hands over the coordinator
+    # it subscribes to (and any it re-discovers) via adopt_sonos_coord.
     sonos_coord = await asyncio.get_running_loop().run_in_executor(
         None, find_zone, zone,
     )
     if sonos_coord is None:
         log.warning(
             "sonos zone %r not discovered at startup; "
-            "airplay repoll loop will be skipped until next restart",
+            "repoll and queue polls wait for the listener to find it",
             zone,
         )
 
@@ -141,7 +142,11 @@ async def main_async() -> None:
     except Exception as e:
         log.warning("initial state probe failed: %r", e)
 
-    listener_task = asyncio.create_task(run_listener(zone, orch.on_sonos_event, stop))
+    listener_task = asyncio.create_task(
+        run_listener(
+            zone, orch.on_sonos_event, stop, on_coord=orch.adopt_sonos_coord,
+        ),
+    )
     sonos_repoll_task = asyncio.create_task(orch.sonos_repoll_loop())
     # Start capture with the right emit state for the initial Sonos source.
     # emit_initial_state above has already populated state.sonos_source,
