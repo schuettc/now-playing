@@ -73,6 +73,29 @@ async def _build_app(state: "State", llm: LLMAssist):
     return app, runner, app["broadcaster"]
 
 
+async def _wait_for_stop_or_listener_exit(
+    stop: asyncio.Event, listener_task: asyncio.Task,
+) -> bool:
+    """Block until shutdown is requested or the Sonos listener task ends.
+    Returns True when the listener ended on its own (its watchdog gave up,
+    or it crashed): the caller must then exit non-zero so systemd restarts
+    the service. Sets ``stop`` in that case so the other tasks wind down.
+    """
+    stop_wait = asyncio.create_task(stop.wait())
+    try:
+        await asyncio.wait(
+            {stop_wait, listener_task}, return_when=asyncio.FIRST_COMPLETED,
+        )
+    finally:
+        stop_wait.cancel()
+    if stop.is_set():
+        return False
+    exc = None if listener_task.cancelled() else listener_task.exception()
+    log.error("sonos listener ended without a stop request: %r — exiting", exc)
+    stop.set()
+    return True
+
+
 async def main_async() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -138,9 +161,12 @@ async def main_async() -> None:
     )
     hygiene_task = asyncio.create_task(orch.hygiene_loop())
 
+    listener_died = False
     try:
-        await stop.wait()
+        listener_died = await _wait_for_stop_or_listener_exit(stop, listener_task)
     finally:
         await asyncio.gather(listener_task, capture_task, hygiene_task, sonos_repoll_task, return_exceptions=True)
         await runner.cleanup()
         log.info("shutdown complete")
+    if listener_died:
+        raise SystemExit(1)
