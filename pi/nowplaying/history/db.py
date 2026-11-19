@@ -8,17 +8,21 @@ Schema:
         artist TEXT,
         title TEXT,
         album TEXT,
-        match_method TEXT,         -- shazam / predicted / sonos-didl / sonos-polled / user-identified / user-selected / unmatched
+        match_method TEXT,         -- shazam / fingerprint / fingerprint-anchor / predicted / sonos-didl / sonos-polled / user-identified / user-selected / unmatched
         source TEXT,               -- vinyl / streaming / airplay / ...
         started_at INTEGER,        -- unix seconds
         ended_at INTEGER           -- unix seconds (extended on repeat heartbeats)
     )
 
-The orchestrator calls `record_play(payload)` for every published recognition
-that has a title. Consecutive heartbeats for the same (release_id, track_position,
-artist, title) within COALESCE_WINDOW_S extend the existing row's ended_at
-instead of creating a new one — so a 4-minute track shows up as ONE row,
-not 16 rows from the heartbeat cadence.
+The orchestrator calls `record_play(payload)` for every recognition that has
+a title. One play is ONE row; a call extends the last row's ended_at instead
+of inserting when it is the same (release_id, track_position, artist, title)
+and any of:
+  - it arrives within COALESCE_WINDOW_S of the row's end (heartbeat cadence);
+  - the caller passes ``extend_only`` (the broadcaster suppressed the publish
+    as content-identical; such a call never inserts);
+  - the track was paused since the row was last written and resumes within
+    ALBUM_SESSION_GAP_S.
 """
 from __future__ import annotations
 
@@ -49,6 +53,20 @@ MIN_TRACKS_PER_SESSION = 3
 # Vinyl heartbeat arriving simultaneously could both SELECT the same "last" row
 # and both INSERT, creating duplicate rows for the same play.
 _write_lock = asyncio.Lock()
+
+# (source, artist, title) of the track last reported PAUSED_PLAYBACK, cleared
+# when a row is written. A PLAYING report for the same track is a resume of
+# the play already on the last row, however long the pause outlasted
+# COALESCE_WINDOW_S, up to ALBUM_SESSION_GAP_S.
+_paused_track: tuple[str, str, str] | None = None
+
+
+def _track_identity(payload: dict) -> tuple[str, str, str]:
+    return (
+        payload.get("source") or "",
+        payload.get("artist") or "",
+        payload.get("title") or "",
+    )
 
 
 def _conn() -> sqlite3.Connection:
@@ -152,6 +170,13 @@ def _within_coalesce_window(
     if now < last_end:
         return False
     return extend_only or (now - last_end) <= COALESCE_WINDOW_S
+
+
+def _resumes_paused_play(last: sqlite3.Row, payload: dict, now: int) -> bool:
+    """True when ``payload`` resumes the paused play on ``last``."""
+    if _paused_track != _track_identity(payload):
+        return False
+    return 0 <= now - int(last["ended_at"]) <= ALBUM_SESSION_GAP_S
 
 
 def _apply_coalesce_update(
@@ -265,6 +290,7 @@ def _write_play_row(
     play, so if it doesn't match the last row (stale-cache re-emit of an
     already-ended track) it must write nothing.
     """
+    global _paused_track
     with _conn() as conn:
         last = conn.execute(
             "SELECT * FROM plays ORDER BY started_at DESC, id DESC LIMIT 1"
@@ -272,19 +298,25 @@ def _write_play_row(
         if (
             last is not None
             and _row_matches(last, payload)
-            and _within_coalesce_window(last, now, extend_only)
+            and (
+                _within_coalesce_window(last, now, extend_only)
+                or _resumes_paused_play(last, payload, now)
+            )
         ):
+            _paused_track = None
             return _coalesce_existing_row(conn, last, payload, now)
         if extend_only:
             return None
+        _paused_track = None
         return _insert_new_row(conn, payload, title, now)
 
 
 def _record_play_sync(payload: dict, extend_only: bool = False) -> dict | None:
     """Synchronous body of record_play; intended to run via asyncio.to_thread.
 
-    No-op when the payload has no title (idle / unmatched / pre-recognition)
-    or when state is not actively playing.
+    Writes nothing when the payload has no title (idle / unmatched /
+    pre-recognition) or when state is not actively playing; a paused
+    track is remembered so its resume extends the same row.
 
     Returns a dict describing the row that was written
     (`{id, started_at, ended_at, artist, title, album, inserted}`) so the
@@ -295,6 +327,9 @@ def _record_play_sync(payload: dict, extend_only: bool = False) -> dict | None:
     if not title:
         return None
     if payload.get("state") != "PLAYING":
+        if payload.get("state") == "PAUSED_PLAYBACK":
+            global _paused_track
+            _paused_track = _track_identity(payload)
         return None
     now = int(time.time())
     try:
