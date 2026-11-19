@@ -195,3 +195,33 @@ def test_repoll_loop_keeps_running_without_a_coordinator_at_boot():
     ):
         _run(asyncio.wait_for(o.sonos_repoll_loop(), timeout=2))
     o._run_repoll_tick.assert_awaited_once()
+
+
+def test_repoll_anchors_the_track_start_on_the_polled_position():
+    """A change found by the poll may be up to a tick old; the polled
+    position says how old, so the elapsed clock does not start late."""
+    from datetime import datetime, timedelta, timezone
+
+    o = _make_orch("airplay", has_metadata=True, last_vinyl=None)
+    polled = {**TRACK, "position_s": 12.0}
+    with mock.patch(
+        "nowplaying.orchestrator._publish_enrichment.poll_track",
+        new=mock.AsyncMock(return_value=polled),
+    ):
+        before = datetime.now(timezone.utc)
+        _run(o._run_repoll_tick())
+    ev = o.on_sonos_event.await_args.args[0]
+    started = datetime.fromisoformat(ev["track_started_at"].replace("Z", "+00:00"))
+    assert abs((before - timedelta(seconds=12) - started).total_seconds()) <= 2
+    assert "uri" not in ev
+    assert "raw_uri_prefix" not in ev
+
+
+def test_repoll_leaves_the_anchor_out_when_sonos_gives_no_position():
+    o = _make_orch("airplay", has_metadata=True, last_vinyl=None)
+    with mock.patch(
+        "nowplaying.orchestrator._publish_enrichment.poll_track",
+        new=mock.AsyncMock(return_value=dict(TRACK)),
+    ):
+        _run(o._run_repoll_tick())
+    assert "track_started_at" not in o.on_sonos_event.await_args.args[0]

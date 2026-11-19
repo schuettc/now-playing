@@ -433,6 +433,7 @@ class PublishEnrichmentMixin:
         # an empty DIDL could never recover, because this loop is the only
         # periodic path that pulls the late metadata across. The no-title
         # guard below makes the genuinely-metadata-less case a cheap no-op.
+        polled_at = datetime.now(timezone.utc)
         try:
             polled = await poll_track(sonos_coord)
         except Exception as e:  # noqa: BLE001
@@ -454,7 +455,7 @@ class PublishEnrichmentMixin:
             "%s repoll: track now %s — %s",
             state.sonos_source, polled.get("artist"), polled.get("title"),
         )
-        await self.on_sonos_event(self._build_synthetic_event(cached, polled))
+        await self.on_sonos_event(self._build_synthetic_event(polled, polled_at))
 
     def _repoll_should_skip(self, cached: dict, polled: dict) -> bool:
         """No track change → skip re-emit on airplay (no queue to advance).
@@ -468,10 +469,12 @@ class PublishEnrichmentMixin:
             return state.sonos_source != "streaming"
         return False
 
-    def _build_synthetic_event(self, cached: dict, polled: dict) -> dict:
+    def _build_synthetic_event(self, polled: dict, polled_at: datetime) -> dict:
         """Build the synthetic Sonos event passed to on_sonos_event from
         a repoll tick. A poll only learns the track, so the transport
-        state is the one the last real NOTIFY reported.
+        state is the one the last real NOTIFY reported. The track start
+        is the poll time minus the polled position, as the listener's own
+        enrichment computes it.
         """
         state = self.state
         synthetic = {
@@ -483,11 +486,15 @@ class PublishEnrichmentMixin:
             "album": polled.get("album"),
             "album_art": polled.get("album_art"),
             "duration": None,
-            "uri": cached.get("uri"),
-            "raw_uri_prefix": cached.get("raw_uri_prefix"),
             "didl_was_empty": False,
             "sonos_polled": True,
         }
+        position_s = polled.get("position_s")
+        if position_s is not None and position_s >= 0:
+            anchor = polled_at - timedelta(seconds=position_s)
+            synthetic["track_started_at"] = anchor.isoformat(
+                timespec="seconds",
+            ).replace("+00:00", "Z")
         if polled.get("duration_s") is not None:
             synthetic["duration_seconds"] = int(polled["duration_s"])
         return synthetic
