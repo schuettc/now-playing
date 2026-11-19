@@ -344,3 +344,27 @@ class _AsyncCM:
 
     async def __aexit__(self, *exc):
         return False
+
+
+def test_transient_error_does_not_stamp_negative():
+    """A 503 or a dropped connection is not "Wikipedia has no article"."""
+    session = _session_with_responses({
+        "rest_v1": [_FakeResponse(404), _FakeResponse(503),
+                    _FakeResponse(404), _FakeResponse(404)],
+        "w/api.php": [_FakeResponse(200, ["q", [], [], []])],
+    })
+    with patch.object(wiki.aiohttp, "ClientSession", return_value=_AsyncCM(session)):
+        result = _run(wiki.fetch_summary("Slumber Party", "Musik"))
+    assert result is None
+    assert not wiki._negative_cached("Slumber Party", "Musik")
+
+
+def test_definitive_miss_stamps_negative():
+    session = _session_with_responses({
+        "rest_v1": [_FakeResponse(404)] * 4,
+        "w/api.php": [_FakeResponse(200, ["q", [], [], []])],
+    })
+    with patch.object(wiki.aiohttp, "ClientSession", return_value=_AsyncCM(session)):
+        result = _run(wiki.fetch_summary("Slumber Party", "Musik"))
+    assert result is None
+    assert wiki._negative_cached("Slumber Party", "Musik")
