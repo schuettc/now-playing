@@ -27,9 +27,10 @@ interface Props {
  * is usually valid, so the regular `TrackSurface` path in `NowPlayingView`
  * handles it with the StatusPill(needs-id) + "Something wrong?" overlay.
  *
- * `identifyState` is forwarded to `VinylIdentifying` to control
- * whether the "Help identify this song" affordance is shown or suppressed
- * (during the `identifying` transient state — we haven't given up yet).
+ * `identifyState` is forwarded to `VinylIdentifying`, which words its
+ * heading and caption differently during the `identifying` transient
+ * state (we haven't given up yet). "Help identify this song" shows
+ * either way.
  */
 export function ScreenOverlay({ state, identifyState }: Props) {
   return (

@@ -1,9 +1,24 @@
+import type { NowPlaying } from '@/types';
 import type { Candidate } from './types';
 
 interface Ids {
   releaseId: number | undefined;
   artist: string | undefined;
   album: string | undefined;
+}
+
+/** The album an art pick is saved against, plus the art it shows now. */
+export interface ArtTarget extends Ids {
+  currentArtUrl: string | undefined;
+}
+
+export function artTargetOf(data: NowPlaying): ArtTarget {
+  return {
+    releaseId: data.release_id ?? undefined,
+    artist: data.artist ?? undefined,
+    album: data.album ?? undefined,
+    currentArtUrl: data.art_url ?? undefined,
+  };
 }
 
 export type PickBody =
@@ -61,7 +76,11 @@ export async function postArtOverride(body: PickBody): Promise<PickResult> {
 }
 
 export async function deleteArtOverride(qs: string): Promise<PickResult> {
-  const res = await fetch(`/api/art-override?${qs}`, { method: 'DELETE' });
-  if (!res.ok) return { ok: false, error: 'Could not reset to default.' };
-  return { ok: true };
+  try {
+    const res = await fetch(`/api/art-override?${qs}`, { method: 'DELETE' });
+    if (!res.ok) return { ok: false, error: 'Could not reset to default.' };
+    return { ok: true };
+  } catch {
+    return { ok: false, error: 'Network error while resetting.', networkError: true };
+  }
 }

@@ -1,7 +1,7 @@
 import type { NowPlaying } from '@/types';
 
 function releaseIdentity(d: NowPlaying): string | null {
-  return d.release_id !== undefined ? `release:${d.release_id}` : null;
+  return d.release_id != null ? `release:${d.release_id}` : null;
 }
 
 function hasNameData(d: NowPlaying): boolean {

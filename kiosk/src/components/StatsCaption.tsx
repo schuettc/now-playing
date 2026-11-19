@@ -16,7 +16,7 @@ function formatPlayCount(count: number): string {
  * current session window (same album, played < SESSION_WINDOW_S ago).
  */
 function formatLastLabel(
-  releaseId: number | undefined,
+  releaseId: number | null | undefined,
   lastPlayedAt: number | null,
   statsReleaseId: number | undefined,
   nowS: number,
@@ -43,12 +43,12 @@ function formatLastLabel(
 export function StatsCaption() {
   const rid = useStore((s) => s.payload?.release_id);
   const stats = useStore((s) =>
-    rid !== undefined ? s.albumStats.get(rid) ?? null : null,
+    rid != null ? s.albumStats.get(rid) ?? null : null,
   );
   const fetchAlbumStats = useStore((s) => s.fetchAlbumStats);
 
   useEffect(() => {
-    if (rid === undefined) return;
+    if (rid == null) return;
     fetchAlbumStats(rid);
   }, [rid, fetchAlbumStats]);
 

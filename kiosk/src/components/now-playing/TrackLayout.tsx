@@ -17,7 +17,7 @@ interface Props {
   effectiveArtUrl: string | undefined;
   artCacheBust: number;
   isPaused: boolean;
-  /** When set, the left column shows the guess card instead of TrackInfo. */
+  /** When set, the left column shows the guess card under TrackInfo. */
   guess?: Guess | null;
 }
 

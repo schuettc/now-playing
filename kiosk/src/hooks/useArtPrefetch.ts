@@ -6,7 +6,7 @@ function prefetchByReleaseId(
   rid: number | undefined | null,
   lastRef: MutableRefObject<number | string | null>,
 ): void {
-  if (rid === undefined || rid === null) return;
+  if (rid == null) return;
   if (lastRef.current === rid) return;
   lastRef.current = rid;
   const img = new Image();
@@ -15,7 +15,7 @@ function prefetchByReleaseId(
 
 /** Fire-and-forget prefetch of an art-by-name URL — deduped by URL. */
 function prefetchByArtUrl(
-  url: string | undefined,
+  url: string | null | undefined,
   lastRef: MutableRefObject<string | null>,
 ): void {
   if (!url || !url.startsWith('/art-by-name')) return;

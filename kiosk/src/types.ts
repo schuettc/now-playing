@@ -18,14 +18,6 @@ export type MatchMethod =
   | 'user-selected'
   | 'user-identified';
 
-export interface NeedsIdPrevious {
-  release_id?: number;
-  track_position?: string;
-  title?: string;
-  artist?: string;
-  art_url?: string;
-}
-
 export interface AlternateRelease {
   release_id: number;
   album: string;
@@ -86,16 +78,23 @@ export interface Guess {
   alt?: { position: string; title: string };
 }
 
+/**
+ * The now-playing payload, limited to the fields the kiosk reads. The
+ * backend builds it from dicts and sends an explicit `null` for a field
+ * it has no value for (a Sonos track with no album, a Shazam-only vinyl
+ * match with no Discogs release), so those fields are `| null`: test
+ * them with `== null`, never `=== undefined`.
+ */
 export interface NowPlaying {
   ts: string;
   state: PlaybackState;
   source: Source;
-  title?: string;
-  artist?: string;
-  album?: string;
-  year?: number;
-  art_url?: string;
-  release_id?: number;
+  title?: string | null;
+  artist?: string | null;
+  album?: string | null;
+  year?: number | null;
+  art_url?: string | null;
+  release_id?: number | null;
   /** MusicBrainz release MBID — populated on the discovered-release
    * path (no-Discogs trilogy). Additive optional; kiosk display logic
    * unchanged today, future "Wrong album" / MB-candidate flows can
@@ -104,13 +103,13 @@ export interface NowPlaying {
   /** Apple Music album identifier from Shazam's wrapper. Additive
    * optional; reserved for future MusicKit integrations. */
   albumadamid?: string;
-  label?: string;
-  catno?: string;
-  track_position?: string;
-  side?: string;
-  tracklist?: TracklistItem[];
-  match_method?: MatchMethod;
-  match_confidence?: number | string;
+  label?: string | null;
+  catno?: string | null;
+  track_position?: string | null;
+  side?: string | null;
+  tracklist?: TracklistItem[] | null;
+  match_method?: MatchMethod | null;
+  match_confidence?: number | string | null;
   /**
    * True when this payload was inferred from the locked album's tracklist
    * because Shazam couldn't identify the audio. The kiosk renders predicted
@@ -120,7 +119,7 @@ export interface NowPlaying {
    */
   predicted?: boolean;
   device_name?: string;
-  alternate_releases?: AlternateRelease[];
+  alternate_releases?: AlternateRelease[] | null;
   /**
    * Number of learned fingerprint refs cached for the current
    * (release_id, track_position) cohort. Populated by
@@ -131,8 +130,6 @@ export interface NowPlaying {
    * track_position to query against.
    */
   learned_fingerprint_count?: number;
-  previous?: NeedsIdPrevious;
-  track_started_at?: string;
   /**
    * Upcoming items from the Sonos playback queue. Populated for
    * streaming sources only; the index of the currently-playing item is
@@ -178,6 +175,4 @@ export interface AlbumStats {
   first_played_at: number | null;
 }
 
-export type WireMessage =
-  | { type: 'now_playing'; payload: NowPlaying }
-  | { type: 'heartbeat'; ts: string };
+export type WireMessage = { type: 'now_playing'; payload: NowPlaying };

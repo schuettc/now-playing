@@ -8,8 +8,9 @@ import { useCallback, useEffect, useState } from 'react';
  *    the kiosk crossfades to it immediately instead of continuing to
  *    show the Sonos-supplied URL for another five seconds.
  *
- * Both are cleared on the next `trackId` change so a stale override
- * from track A can't shadow track B's real art_url.
+ * `artUrlOverride` is cleared on the next `trackId` change so a stale
+ * override from track A can't shadow track B's real art_url.
+ * `artCacheBust` is kept for the rest of the session.
  */
 export function useArtOverride(args: {
   trackId: string;

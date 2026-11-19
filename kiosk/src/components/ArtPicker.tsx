@@ -1,6 +1,8 @@
+import { useState } from 'react';
 import type { NowPlaying } from '@/types';
 import { useArtCandidates } from '@/features/admin/useArtCandidates';
 import { useArtOverride } from '@/features/admin/useArtOverride';
+import { artTargetOf } from '@/features/admin/artOverrideApi';
 import { CandidateGrid } from '@/features/admin/CandidateGrid';
 import { ArtPickerFooter } from '@/features/admin/ArtPickerFooter';
 import { useEscapeKey } from '@/hooks/useEscapeKey';
@@ -29,21 +31,17 @@ interface Props {
  * ArtOverride}` — this component is presentation only.
  */
 export function ArtPicker({ data, onClose, onSaved }: Props) {
-  const releaseId = data.release_id;
-  const byName = !releaseId && Boolean(data.artist && data.album);
-  const canFetch = Boolean(releaseId) || byName;
+  // Captured when the picker opens: the candidates shown and the save both
+  // belong to this album, whatever starts playing while the grid is up.
+  const [target] = useState(() => artTargetOf(data));
+  const { releaseId, artist, album } = target;
+  const canFetch = Boolean(releaseId) || Boolean(artist && album);
 
-  const { candidates, streamDone } = useArtCandidates({
-    releaseId,
-    artist: data.artist,
-    album: data.album,
-    currentArtUrl: data.art_url,
-    enabled: canFetch,
-  });
+  const { candidates, streamDone } = useArtCandidates({ ...target, enabled: canFetch });
   const { pick, reset, busy, error } = useArtOverride({
     releaseId,
-    artist: data.artist,
-    album: data.album,
+    artist,
+    album,
     onSaved,
     onClose,
   });
@@ -53,8 +51,8 @@ export function ArtPicker({ data, onClose, onSaved }: Props) {
   return (
     <ArtPickerShell onClose={onClose}>
       <ArtPickerHeader
-        album={data.album}
-        artist={data.artist}
+        album={album}
+        artist={artist}
         onClose={onClose}
       />
       <ArtPickerError error={error} />

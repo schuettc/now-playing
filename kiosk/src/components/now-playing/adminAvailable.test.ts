@@ -39,3 +39,11 @@ describe('computeAdminAvailable', () => {
     expect(computeAdminAvailable({ ...base, title: 'T' })).toBe(false);
   });
 });
+
+describe('computeAdminAvailable with null fields', () => {
+  it('does not count a null release_id as a release', () => {
+    expect(
+      computeAdminAvailable({ ...base, title: 'T', release_id: null, album: null }),
+    ).toBe(false);
+  });
+});

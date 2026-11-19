@@ -72,7 +72,7 @@ export function SideTimer({ data }: Props) {
   const { tracklist, track_position } = data;
 
   const summary = useMemo(
-    () => computeSideSummary(tracklist, track_position, data.side),
+    () => computeSideSummary(tracklist ?? undefined, track_position ?? undefined, data.side ?? undefined),
     [tracklist, track_position, data.side],
   );
 

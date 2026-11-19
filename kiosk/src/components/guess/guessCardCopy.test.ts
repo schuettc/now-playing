@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { primaryButtonLabel, pickManuallyLabel } from './guessCardCopy';
+import { guessLifetimeMs } from './guessConfirmHandlers';
 import type { Guess } from '@/types';
 
 const baseGuess: Guess = {
@@ -26,5 +27,17 @@ describe('guessCardCopy', () => {
 
   it('pickManuallyLabel returns the canonical ghost-button text', () => {
     expect(pickManuallyLabel()).toBe('Pick a track manually →');
+  });
+});
+
+describe('guessLifetimeMs', () => {
+  it('is the backend lifetime, long or short', () => {
+    expect(guessLifetimeMs({ expires_in_s: 200 })).toBe(200_000);
+    expect(guessLifetimeMs({ expires_in_s: 20 })).toBe(20_000);
+  });
+
+  it('is the fixed 60s window only when the backend sends no lifetime', () => {
+    expect(guessLifetimeMs({ expires_in_s: null })).toBe(60_000);
+    expect(guessLifetimeMs({})).toBe(60_000);
   });
 });

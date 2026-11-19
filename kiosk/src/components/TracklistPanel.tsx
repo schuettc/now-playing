@@ -179,10 +179,10 @@ function buildRowProps(
   // so the highlight pill moves to the tapped row before the WS
   // reconciliation arrives. impl-review-1 fix.
   const effectiveCurrent =
-    pinPosition ?? (payload ? payload.track_position : undefined);
+    pinPosition ?? payload?.track_position ?? undefined;
   return {
     useTappable: shouldUseTappable(payload),
-    releaseId: payload ? payload.release_id : undefined,
+    releaseId: payload?.release_id ?? undefined,
     current: effectiveCurrent,
     guessPos: payload?.guess ? payload.guess.position : undefined,
     guessConfidence: payload?.guess ? payload.guess.confidence : undefined,

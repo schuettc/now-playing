@@ -1,5 +1,10 @@
-import { describe, expect, it } from 'vitest';
-import { buildPickBody, buildResetQuery } from './artOverrideApi';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  artTargetOf,
+  buildPickBody,
+  buildResetQuery,
+  deleteArtOverride,
+} from './artOverrideApi';
 import type { Candidate } from './types';
 
 const candidate: Candidate = {
@@ -61,5 +66,33 @@ describe('buildResetQuery', () => {
         album: undefined,
       }),
     ).toBe('artist=&album=');
+  });
+});
+
+describe('artTargetOf', () => {
+  it('captures the album the picker was opened for', () => {
+    const opened = artTargetOf({
+      ts: 't', state: 'PLAYING', source: 'airplay',
+      artist: 'A', album: 'First', art_url: '/art-cache/a',
+    });
+    expect(opened).toEqual({
+      releaseId: undefined, artist: 'A', album: 'First', currentArtUrl: '/art-cache/a',
+    });
+    expect(buildPickBody(candidate, opened)).toEqual({
+      artist: 'A', album: 'First', url: candidate.url, source: 'caa',
+    });
+  });
+});
+
+describe('deleteArtOverride', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('reports a network error instead of rejecting', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('network')));
+    await expect(deleteArtOverride('release_id=1')).resolves.toEqual({
+      ok: false,
+      error: 'Network error while resetting.',
+      networkError: true,
+    });
   });
 });

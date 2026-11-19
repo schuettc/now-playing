@@ -71,12 +71,6 @@ export const fixtures = {
     state: 'NEEDS_ID',
     source: 'vinyl',
     match_method: 'unmatched',
-    previous: {
-      release_id: 7405236,
-      track_position: 'C1',
-      title: '$300',
-      artist: 'Soul Coughing',
-    },
   },
 } satisfies Record<string, NowPlaying>;
 

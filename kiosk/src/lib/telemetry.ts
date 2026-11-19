@@ -12,7 +12,6 @@
 export type TelemetryEvent =
   | 'identify_guess_shown'
   | 'identify_guess_confirm'
-  | 'identify_guess_reject'
   | 'identify_guess_pick_another'
   | 'identify_guess_timeout'
   | 'identify_tracklist_tap'

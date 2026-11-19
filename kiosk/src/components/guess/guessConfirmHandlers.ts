@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useLocation } from 'wouter';
 import type { Guess } from '@/types';
 import { useStore } from '@/store/useStore';
@@ -11,6 +11,18 @@ export type GuessVariant = 'card';
 export interface GuessConfirmHandlers {
   onConfirm: () => void;
   onPickAnother: () => void;
+  /** How long the card lives, fixed when it mounts; the strip drains over it. */
+  lifetimeMs: number;
+}
+
+/**
+ * The card's lifetime: the guessed track's remaining time as the backend
+ * reports it, or the fixed window when the backend has no duration.
+ */
+export function guessLifetimeMs(guess: Pick<Guess, 'expires_in_s'>): number {
+  return guess.expires_in_s != null
+    ? guess.expires_in_s * 1000
+    : MOTION.guessTimeoutMs;
 }
 
 async function postDismissGuess(release_id: number, track_position: string): Promise<void> {
@@ -29,13 +41,13 @@ async function postDismissGuess(release_id: number, track_position: string): Pro
 }
 
 /**
- * Shared tap-handler factory for the three `GuessConfirm` variants.
+ * Tap handlers and the single lifetime clock for `GuessConfirmCard`.
  *
  * Reads `payload.release_id` dynamically on each tap so a mid-prompt
  * record swap doesn't send `/api/dismiss-guess` to the wrong album.
- * Also installs a 60s `MOTION.guessTimeoutMs` timer that fires both
- * the local `clearGuess()` and `POST /api/dismiss-guess` so the
- * backend stops emitting the same guess afterward.
+ * When the lifetime runs out it fires both the local `clearGuess()` and
+ * `POST /api/dismiss-guess` so the backend stops emitting the same
+ * guess afterward.
  */
 export function useGuessConfirmHandlers(
   guess: Guess,
@@ -62,16 +74,17 @@ export function useGuessConfirmHandlers(
   const mountedAtRef = useRef(Date.now());
   const msToDecide = () => Date.now() - mountedAtRef.current;
 
-  // 60s timeout: clear locally + POST dismiss + telemetry.
-  // Same stability concern as above — depending on `guess` object
-  // would reset the timer every heartbeat. Use stable primitives
-  // so the timer only resets when the guess identity actually
-  // changes. (impl-review-1 blocker fix.)
-  const confidence = guess.confidence;
-  const source = guess.source;
-  const position = guess.position;
+  // The card is keyed by guess position, so this is captured once per
+  // guess. Later heartbeats restamp `expires_in_s` and `confidence` on the
+  // same guess; they must not restart the clock.
+  const [lifetimeMs] = useState(() => guessLifetimeMs(guess));
+  const latestGuess = useRef(guess);
+  latestGuess.current = guess;
+
+  // Lifetime over: clear locally + POST dismiss + telemetry.
   useEffect(() => {
     const t = setTimeout(() => {
+      const { position, confidence, source } = latestGuess.current;
       const rid = useStore.getState().payload?.release_id;
       telemetryTrack('identify_guess_timeout', {
         variant,
@@ -82,11 +95,11 @@ export function useGuessConfirmHandlers(
         void postDismissGuess(rid, position);
       }
       useStore.getState().clearGuess();
-    }, MOTION.guessTimeoutMs);
+    }, lifetimeMs);
     return () => clearTimeout(t);
-  }, [position, confidence, source, variant]);
+  }, [lifetimeMs, variant]);
 
-  const currentReleaseId = (): number | undefined =>
+  const currentReleaseId = (): number | null | undefined =>
     useStore.getState().payload?.release_id;
 
   const onConfirm = () => {
@@ -112,5 +125,5 @@ export function useGuessConfirmHandlers(
     navigate('/identify?scope=track');
   };
 
-  return { onConfirm, onPickAnother };
+  return { onConfirm, onPickAnother, lifetimeMs };
 }

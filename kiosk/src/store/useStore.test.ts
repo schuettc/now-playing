@@ -38,3 +38,21 @@ describe('pulseLearningChip', () => {
     expect(useStore.getState().learningChipPulses).toBe(3);
   });
 });
+
+describe('lastRecognizedAt', () => {
+  it('is not stamped by a payload that identifies nothing', () => {
+    useStore.setState({ payload: null, lastRecognizedAt: null });
+    // What the backend sends for a Sonos source with no track metadata.
+    useStore.getState().setPayload({
+      ts: 't', state: 'PLAYING', source: 'airplay',
+      title: null, artist: null, album: null, art_url: null,
+    });
+    expect(useStore.getState().lastRecognizedAt).toBeNull();
+  });
+
+  it('is stamped when a title first appears', () => {
+    useStore.setState({ payload: null, lastRecognizedAt: null });
+    useStore.getState().setPayload({ ts: 't', state: 'PLAYING', source: 'airplay', title: 'X' });
+    expect(useStore.getState().lastRecognizedAt).not.toBeNull();
+  });
+});

@@ -191,6 +191,25 @@ export function deriveIdentifyState(
   return deriveAfterPinGraduation(payload, flags, pinPosition);
 }
 
+/**
+ * True once a graduated pin no longer describes what is playing: the
+ * payload shows another record or another track. The hook then clears
+ * the pin, so a later play of the same track is judged on its own
+ * payload instead of an old tap. Inside the 50s window the pin holds
+ * regardless (see the backend-override semantics above).
+ */
+export function pinOutlived(
+  payload: NowPlaying | null,
+  pinAtMs: number | null,
+  pinReleaseId: number | null,
+  pinPosition: string | null,
+  nowMs: number,
+): boolean {
+  if (payload === null || pinAtMs === null) return false;
+  if (nowMs - pinAtMs < MOTION.pinGraduationMs) return false;
+  return !pinReleaseMatches(pinReleaseId, payload) || payload.track_position !== pinPosition;
+}
+
 export interface UseIdentifyState {
   identifyState: IdentifyState;
   /**
@@ -262,10 +281,9 @@ export function useIdentifyState(payload: NowPlaying | null): UseIdentifyState {
   // deriveAfterPinGraduation) without waiting for the next WS
   // payload. pinAtMs is NOT cleared here — keeping it set lets
   // deriveAfterPinGraduation hold confirmed-local after the timer,
-  // never reverting to needs-id while the album is still locked.
-  // clearPin (explicit) and the album-change path
-  // (pinReleaseMatches in deriveIdentifyState) are the only ways
-  // out of the pin state.
+  // never reverting to needs-id while the pinned track is still what
+  // the payload shows. The pin ends on clearPin (explicit) or once
+  // `pinOutlived` sees the payload move on (effect below).
   useEffect(() => {
     if (pinAtMs === null) return;
     const remaining = MOTION.pinGraduationMs - (Date.now() - pinAtMs);
@@ -347,6 +365,14 @@ export function useIdentifyState(payload: NowPlaying | null): UseIdentifyState {
     pinPositionRef.current = null;
     setPinAtMs(null);
   }, []);
+
+  // Checked after every render: the graduation tick and each new payload
+  // both re-render, and those are the two moments a pin can become stale.
+  useEffect(() => {
+    if (pinOutlived(payload, pinAtMs, pinReleaseIdRef.current, pinPositionRef.current, Date.now())) {
+      clearPin();
+    }
+  });
 
   const identifyState = deriveIdentifyState(
     payload,
