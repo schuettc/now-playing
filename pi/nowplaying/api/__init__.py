@@ -1,12 +1,24 @@
 """HTTP + WebSocket app that drives the kiosk display.
 
-- GET /            → kiosk/dist/index.html
-- GET /assets/*    → kiosk/dist/assets/* (Vite output)
-- GET /fixtures/*  → kiosk/dist/fixtures/* (placeholder SVG covers)
-- GET /art/<id>    → pi/data/art/<id>.jpg (Discogs cover cache)
-- WS  /ws          → unified now-playing payload broadcast
+Routes registered here:
 
-The orchestrator (main.py) imports this and pushes events via Broadcaster.publish().
+- GET /, /identify      → kiosk/dist/index.html
+- GET /dashboard        → pi/nowplaying/static/dashboard.html
+- GET /assets/*         → kiosk/dist/assets/* (Vite output)
+- GET /fixtures/*       → kiosk/dist/fixtures/* (placeholder SVG covers)
+- GET /art/<id>         → the release's art override, else
+                          pi/data/art/musicbrainz/<id>.jpg
+- GET /art-by-name      → art override for an (artist, album) pair
+- GET /art-cache/<key>  → cached or proxied service art
+- GET /api/art-candidates, POST/DELETE /api/art-override → art picker
+- GET /api/album-context → Wikipedia blurb
+- GET /api/now-playing  → last published payload
+- GET /health
+- WS  /ws               → unified now-playing payload broadcast
+
+The orchestrator adds the control and history routes to the same app
+(``control.register``, ``history.routes``) and pushes events via
+Broadcaster.publish().
 """
 from __future__ import annotations
 
@@ -44,6 +56,7 @@ from nowplaying.api.pages import (
     identify_page_handler,
     index_handler,
 )
+from nowplaying.api.request_guard import request_guard
 from nowplaying.api.snapshot import (
     _resolve_album_context_key,
     album_context_handler,
@@ -86,25 +99,21 @@ __all__ = [
 
 async def _on_startup(app: web.Application) -> None:
     # Shared aiohttp session for the album-art proxy upstream fetches.
-    # Originally added for LRCLIB lyrics; lyrics removed in `remove-lyrics`
-    # but the art proxy reuses the session via `app["lyrics_session"]`.
-    # Key name preserved to avoid churning unrelated callers; consider
-    # renaming to `http_session` in a future cleanup.
     import aiohttp as _aiohttp
-    app["lyrics_session"] = _aiohttp.ClientSession(
+    app["http_session"] = _aiohttp.ClientSession(
         timeout=_aiohttp.ClientTimeout(total=15.0),
         headers={"User-Agent": "now-playing/1.0 (https://github.com/schuettc/now-playing)"},
     )
 
 
 async def _on_cleanup(app: web.Application) -> None:
-    sess = app.get("lyrics_session")
+    sess = app.get("http_session")
     if sess is not None:
         await sess.close()
 
 
 def make_app() -> web.Application:
-    app = web.Application()
+    app = web.Application(middlewares=[request_guard])
     app["broadcaster"] = Broadcaster()
     app.on_startup.append(_on_startup)
     app.on_cleanup.append(_on_cleanup)

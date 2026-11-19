@@ -40,10 +40,10 @@ def _make_app() -> web.Application:
     app.router.add_get("/api/art-candidates", api.art_candidates_handler)
     app.router.add_post("/api/art-override", api.art_override_post_handler)
     app.router.add_delete("/api/art-override", api.art_override_delete_handler)
-    # The handlers reach into request.app["lyrics_session"] — give them
+    # The handlers reach into request.app["http_session"] — give them
     # a sentinel that won't actually be used (we patch art_overrides.set
     # and art_picker.fetch_candidates).
-    app["lyrics_session"] = object()
+    app["http_session"] = object()
     return app
 
 
