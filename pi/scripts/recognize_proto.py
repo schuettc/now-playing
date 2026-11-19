@@ -46,7 +46,7 @@ def emit(d: dict) -> None:
     sys.stdout.flush()
 
 
-async def recognize(  # skylos: ignore — prototype recognizer; production cascade lives in nowplaying/vinyl
+async def recognize(  # skylos: ignore — the production recognizer (imported by orchestrator/_heartbeat_handlers.py); its length is the Shazam → Discogs → discovery cascade in one place
     clip_path: Path,
     *,
     preferred_release_id: int | None = None,
@@ -95,7 +95,8 @@ async def recognize(  # skylos: ignore — prototype recognizer; production casc
         # field; older shazamio responses may omit it.
         if sh.get("match_offset_s") is not None:
             base["track_position_s"] = float(sh["match_offset_s"])
-        rel = discogs_catalog.find_by_artist_title(
+        rel = await asyncio.to_thread(
+            discogs_catalog.find_by_artist_title,
             artist=shazam_artist or "",
             title=shazam_track_title or "",
             preferred_release_id=preferred_release_id,
@@ -214,9 +215,11 @@ async def _run_isrc_duration(isrc: str, *, release_id, mbid, position: str) -> N
         if secs is None:
             _isrc_no_duration.add(isrc)
             return
-        n = (_set_discogs_duration(release_id, position, secs)
-             if release_id is not None
-             else _set_discovered_duration(mbid, position, secs))
+        n = await (
+            asyncio.to_thread(_set_discogs_duration, release_id, position, secs)
+            if release_id is not None
+            else asyncio.to_thread(_set_discovered_duration, mbid, position, secs)
+        )
         if n:
             print(f"isrc-duration: filled isrc={isrc} pos={position} -> {secs}s", file=sys.stderr)  # noqa: T201
     except Exception as e:  # noqa: BLE001 — background task: log + swallow

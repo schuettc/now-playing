@@ -44,7 +44,7 @@ def _swap_result_fields(
     on the new release (already collected by the catalog).
     """
     result["release_id"] = new_rel.get("id")
-    result["album"] = new_rel.get("title")
+    result["album"] = new_rel.get("disambiguated_album") or new_rel.get("title")
     result["year"] = new_rel.get("year")
     result["label"] = new_rel.get("label")
     result["catno"] = new_rel.get("catno")
