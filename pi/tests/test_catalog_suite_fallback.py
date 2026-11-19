@@ -19,6 +19,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 _PI_ROOT = Path(__file__).resolve().parents[1]
 if str(_PI_ROOT) not in sys.path:
     sys.path.insert(0, str(_PI_ROOT))
@@ -87,6 +89,28 @@ PLAIN_LP = {
 
 def _primary_returns_none(artist, title, *, preferred_release_id=None, album=None):
     return None
+
+
+@pytest.fixture(autouse=True)
+def suite_parents():
+    """American Idiot's suite-parent rows, as the catalog stores them."""
+    with patch.object(
+        catalog, "_suite_parent_titles",
+        return_value=["Jesus Of Suburbia", "Homecoming"],
+    ):
+        yield
+
+
+def test_title_that_is_no_suite_of_the_release_is_not_assigned_to_it():
+    """AirPlay "21 Guns" (2026-10-30) is on no record in the collection."""
+    rows = [_FakeRow(release_id=32110209, artist="Green Day")]
+    with patch.object(catalog, "_find_by_artist_title_primary", side_effect=_primary_returns_none), \
+         patch.object(catalog, "get_release", return_value=dict(AMERICAN_IDIOT)), \
+         patch.object(catalog, "open_ro", _mock_open_ro(rows)):
+        assert catalog.find_by_artist_title("Green Day", "21 Guns") is None
+        assert catalog.find_by_artist_title(
+            "Green Day", "21 Guns", preferred_release_id=32110209,
+        ) is None
 
 
 def test_suite_fallback_returns_preferred_release():

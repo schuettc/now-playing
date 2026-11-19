@@ -298,19 +298,49 @@ def _has_multipart_positions(tracks: list[dict]) -> bool:
     return False
 
 
+_SUITE_TITLE_SIM_FLOOR = 0.7
+
+
+def _suite_parent_titles(release_id: int) -> list[str]:
+    """Titles of the release's suite-parent rows (``is_suite_parent=1``)."""
+    try:
+        with open_ro() as con:
+            rows = con.execute(
+                "SELECT title FROM tracks "
+                "WHERE release_id = ? AND is_suite_parent = 1",
+                (release_id,),
+            ).fetchall()
+    except sqlite3.OperationalError as e:
+        logger.debug("_suite_parent_titles: SQL failed for release=%r: %r", release_id, e)
+        return []
+    return [r["title"] or "" for r in rows]
+
+
+def _names_suite_of(release_id: int, title: str) -> bool:
+    """True when ``title`` is the name of one of the release's suites."""
+    norm_title = _normalize(title)
+    if not norm_title:
+        return False
+    return any(
+        _string_sim(norm_title, _normalize(parent)) >= _SUITE_TITLE_SIM_FLOOR
+        for parent in _suite_parent_titles(release_id)
+    )
+
+
 def _suite_fallback(
-    artist: str, preferred_release_id: int,
+    artist: str, title: str, preferred_release_id: int,
 ) -> Optional[dict]:
     """Last-resort match for multi-part suites. Returns the sticky
     release with no matched_track_position so the caller's positional
-    guess is preserved. Declines for plain LPs and for artist mismatch
-    so this can't accidentally lock onto a stale sticky after a real
-    album change.
+    guess is preserved. Declines for plain LPs, for artist mismatch, and
+    for a title that names none of the release's suites.
     """
     rel = get_release(preferred_release_id)
     if rel is None:
         return None
     if not _has_multipart_positions(rel.get("tracks") or []):
+        return None
+    if not _names_suite_of(preferred_release_id, title):
         return None
     norm_target_artist = _normalize(artist)
     norm_rel_artist = _normalize(rel.get("artist") or "")
@@ -329,13 +359,13 @@ def _suite_fallback(
     return rel
 
 
-def _suite_artist_scan(artist: str) -> Optional[dict]:
+def _suite_artist_scan(artist: str, title: str) -> Optional[dict]:
     """Cold-start suite fallback. When no sticky release is available
     (e.g. user dropped directly on D2 "Homecoming" after orchestrator
     restart) scan the collection for releases by this artist whose
-    tracklist has multi-part positions. Returns the release iff there
-    is exactly one such match — multiple matches are ambiguous and we
-    decline rather than guess.
+    tracklist has multi-part positions and a suite named ``title``.
+    Returns the release iff there is exactly one such match — multiple
+    matches are ambiguous and we decline rather than guess.
     """
     norm_target_artist = _normalize(artist)
     if not norm_target_artist:
@@ -366,6 +396,8 @@ def _suite_artist_scan(artist: str) -> Optional[dict]:
         if rel is None:
             continue
         if not _has_multipart_positions(rel.get("tracks") or []):
+            continue
+        if not _names_suite_of(row["release_id"], title):
             continue
         candidates.append(rel)
     if len(candidates) != 1:
@@ -418,9 +450,10 @@ def find_by_artist_title(
     1. Slash-split fallback — Shazam returns medley titles like
        ``"Changeling / Transmission"``; split on ` / ` and pick the
        higher-scoring half. Recurses naturally for 3+ track medleys.
-    2. Suite-name fallback — multi-part suites (American Idiot's
-       "Homecoming" → D1.I–V) appear in Discogs as leaf movements only;
-       Shazam returns the parent suite name. Two flavors:
+    2. Suite-name fallback — for multi-part suites (American Idiot's
+       "Homecoming" → D1.I–V) Shazam returns the parent suite name.
+       Both flavors require the title to name a suite-parent row of the
+       release they return:
          a. Sticky path — when a ``preferred_release_id`` is in flight
             and it's a multi-part release with matching artist, keep
             it so the kiosk preserves album art / tracklist context.
@@ -463,10 +496,10 @@ def find_by_artist_title(
             )
             return winner
     if preferred_release_id is not None:
-        sticky = _suite_fallback(artist, preferred_release_id)
+        sticky = _suite_fallback(artist, title, preferred_release_id)
         if sticky is not None and _album_matches(album, sticky.get("title")):
             return sticky
-    scanned = _suite_artist_scan(artist)
+    scanned = _suite_artist_scan(artist, title)
     if scanned is not None and _album_matches(album, scanned.get("title")):
         return scanned
     return None
