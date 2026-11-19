@@ -247,12 +247,8 @@ def test_on_heartbeat_proceeds_for_vinyl():
 
 
 def test_on_heartbeat_non_vinyl_no_metadata_is_skipped():
-    """AirPlay without metadata (system-audio case) is also skipped.
-
-    `_classify_heartbeat_source` returns 'airplay' when has_metadata=False,
-    but the on_heartbeat guard fires immediately after and short-circuits.
-    No Shazam call, no streak increment.
-    """
+    """AirPlay without metadata is skipped like any other AirPlay:
+    no Shazam call, no streak increment."""
     o = _make_orch("airplay")
     o.state.sonos_has_metadata = False
     o._run_recognizer = mock.AsyncMock()
