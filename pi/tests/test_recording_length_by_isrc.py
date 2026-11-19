@@ -95,11 +95,8 @@ def test_recording_length_by_isrc_happy_path():
             # Wire ClientSession to return our mock
             mock_aiohttp.ClientSession.return_value = session_cm
             mock_aiohttp.ClientTimeout = MagicMock(return_value=MagicMock())
-            # Make the semaphore a real one so the async-with works; no-op sleep
-            mock_asyncio.Semaphore = asyncio.Semaphore
+            # No-op sleep
             mock_asyncio.sleep = AsyncMock(return_value=None)
-            # Reset module-level semaphore so _get_mb_rate_limit() creates fresh
-            mb_lookup._mb_rate_limit = None
             result = await mb_lookup.recording_length_by_isrc("GBAYE0000001")
         return result
 
@@ -128,9 +125,7 @@ def test_recording_length_by_isrc_non_200_is_unreachable():
         ):
             mock_aiohttp.ClientSession.return_value = session_cm
             mock_aiohttp.ClientTimeout = MagicMock(return_value=MagicMock())
-            mock_asyncio.Semaphore = asyncio.Semaphore
             mock_asyncio.sleep = AsyncMock(return_value=None)
-            mb_lookup._mb_rate_limit = None
             result = await mb_lookup.recording_length_by_isrc("GBAYE0000001")
         return result
 
@@ -154,9 +149,7 @@ def test_recording_length_by_isrc_network_error_is_unreachable():
         ):
             mock_aiohttp.ClientSession.return_value = session_cm
             mock_aiohttp.ClientTimeout = MagicMock(return_value=MagicMock())
-            mock_asyncio.Semaphore = asyncio.Semaphore
             mock_asyncio.sleep = AsyncMock(return_value=None)
-            mb_lookup._mb_rate_limit = None
             result = await mb_lookup.recording_length_by_isrc("GBAYE0000001")
         return result
 
@@ -176,9 +169,7 @@ def test_recording_length_by_isrc_empty_recordings_returns_none():
         ):
             mock_aiohttp.ClientSession.return_value = session_cm
             mock_aiohttp.ClientTimeout = MagicMock(return_value=MagicMock())
-            mock_asyncio.Semaphore = asyncio.Semaphore
             mock_asyncio.sleep = AsyncMock(return_value=None)
-            mb_lookup._mb_rate_limit = None
             result = await mb_lookup.recording_length_by_isrc("GBAYE0000001")
         return result
 

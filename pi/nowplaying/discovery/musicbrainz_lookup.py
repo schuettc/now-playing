@@ -26,7 +26,8 @@ from typing import Optional
 
 import aiohttp
 
-from nowplaying import coverart
+from nowplaying import art_cache, coverart
+from nowplaying.coverart import Unreachable
 from nowplaying.discovery._normalize import (
     albums_match,
     normalize_album,
@@ -44,27 +45,10 @@ log = logging.getLogger("nowplaying.discovery")
 USER_AGENT = coverart.USER_AGENT
 _NEGATIVE_TTL_S = 7 * 24 * 3600
 
-# Serialises recording_length_by_isrc HTTP calls to honour MusicBrainz's
-# 1 req/s rate limit. Lazy-initialised (same pattern as art_cache._get_semaphore)
-# to avoid creating the Semaphore at import time when no event loop is running.
-_mb_rate_limit: asyncio.Semaphore | None = None
-
-
-def _get_mb_rate_limit() -> asyncio.Semaphore:
-    global _mb_rate_limit
-    if _mb_rate_limit is None:
-        _mb_rate_limit = asyncio.Semaphore(1)
-    return _mb_rate_limit
-
 # Sides A..Z by medium ordinal; single-medium vinyl releases come out
 # as A1, A2, ... — downstream consumers treat the tracklist opaquely,
 # so this is good enough for side-timer / BEST GUESS rendering.
 _SIDE_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-
-
-class Unreachable(Exception):
-    """MusicBrainz gave no answer (transport error, or a status other than
-    200/404). Not a miss: nothing may be negative-cached on it."""
 
 
 def _norm(s: str) -> str:
@@ -187,13 +171,12 @@ async def recording_length_by_isrc(isrc: str, *, timeout_s: float = 15.0) -> int
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
     try:
         timeout = aiohttp.ClientTimeout(total=timeout_s)
-        async with _get_mb_rate_limit():
+        async with art_cache.musicbrainz_slot():
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(url, headers=headers) as resp:  # skylos: ignore SKY-D216 — url built from hardcoded musicbrainz.org template; only ISRC interpolated via urllib.quote
                     if resp.status != 200:
                         raise Unreachable(f"status={resp.status}")
                     data = await resp.json()
-            await asyncio.sleep(1.0)  # enforce 1 req/s inside the semaphore
     except Unreachable:
         raise
     except Exception as e:  # noqa: BLE001 — network/parse: not an answer
@@ -224,15 +207,16 @@ async def lookup_by_isrc(
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
     timeout = aiohttp.ClientTimeout(total=timeout_s)
     try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url, headers=headers) as resp:  # skylos: ignore SKY-D216 — url built from hardcoded musicbrainz.org template; only ISRC interpolated through urllib.quote
-                if resp.status != 200:
-                    log.info(
-                        "discovery: isrc=%s lookup status=%d",
-                        isrc, resp.status,
-                    )
-                    return None
-                data = await resp.json()
+        async with art_cache.musicbrainz_slot():
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url, headers=headers) as resp:  # skylos: ignore SKY-D216 — url built from hardcoded musicbrainz.org template; only ISRC interpolated through urllib.quote
+                    if resp.status != 200:
+                        log.info(
+                            "discovery: isrc=%s lookup status=%d",
+                            isrc, resp.status,
+                        )
+                        return None
+                    data = await resp.json()
     except (aiohttp.ClientError, asyncio.TimeoutError) as e:
         log.info("discovery: isrc=%s lookup failed: %r", isrc, e)
         return None
@@ -284,17 +268,18 @@ async def _fetch_release_full(
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
     timeout = aiohttp.ClientTimeout(total=timeout_s)
     try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url, headers=headers) as resp:  # skylos: ignore SKY-D216 — url built from hardcoded musicbrainz.org template; only MBID interpolated
-                if resp.status != 200:
-                    log.info(
-                        "discovery: release %s fetch status=%d",
-                        release_mbid, resp.status,
-                    )
-                    if resp.status == 404:
-                        return None
-                    raise Unreachable(f"status={resp.status}")
-                data = await resp.json()
+        async with art_cache.musicbrainz_slot():
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url, headers=headers) as resp:  # skylos: ignore SKY-D216 — url built from hardcoded musicbrainz.org template; only MBID interpolated
+                    if resp.status != 200:
+                        log.info(
+                            "discovery: release %s fetch status=%d",
+                            release_mbid, resp.status,
+                        )
+                        if resp.status == 404:
+                            return None
+                        raise Unreachable(f"status={resp.status}")
+                    data = await resp.json()
     except (aiohttp.ClientError, asyncio.TimeoutError) as e:
         log.info(
             "discovery: release %s fetch failed: %r", release_mbid, e,
@@ -349,8 +334,8 @@ async def lookup_by_artist_album(
     fetches the full release for tracklist + durations.
 
     Returns the same shape as :func:`lookup_by_isrc` or None. A miss is
-    negative-cached for ``_NEGATIVE_TTL_S``; a release fetch that could
-    not reach MusicBrainz is not.
+    negative-cached for ``_NEGATIVE_TTL_S``; a search or release fetch
+    that could not reach MusicBrainz is not.
     """
     if not artist or not album:
         return None
@@ -361,10 +346,17 @@ async def lookup_by_artist_album(
         )
         return None
 
-    release_mbid = await _resolve_artist_album_mbid(
-        artist, album, track_count_hint=track_count_hint,
-        timeout_s=timeout_s,
-    )
+    try:
+        release_mbid = await _resolve_artist_album_mbid(
+            artist, album, track_count_hint=track_count_hint,
+            timeout_s=timeout_s,
+        )
+    except Unreachable as e:
+        log.info(
+            "discovery: MusicBrainz unreachable for artist=%r album=%r: %r",
+            artist, album, e,
+        )
+        return None
     if not release_mbid:
         _mark_negative(artist, album)
         return None
@@ -388,6 +380,8 @@ async def _resolve_artist_album_mbid(
     """Resolve the best MBID for (artist, album). When a track-count
     hint is provided, walk up to 6 candidates and pick the one whose
     track count is closest. Without a hint, just return the first match.
+    None means MusicBrainz has no such release; raises ``Unreachable``
+    when the search, or every candidate's tracklist fetch, got no answer.
     """
     if track_count_hint is None or track_count_hint <= 0:
         hit = await coverart.fetch_release_mbid(
@@ -402,11 +396,13 @@ async def _resolve_artist_album_mbid(
         return None
     best_mbid: Optional[str] = None
     best_diff = -1
+    unreachable = 0
     for mbid, _rg in candidates:  # skylos: ignore SKY-U401 — _rg (release-group MBID) is intentionally unused; only mbid drives the recording fetch
         recordings = await coverart.fetch_release_recordings(
             mbid, timeout_s=timeout_s,
         )
         if recordings is None:
+            unreachable += 1
             continue
         diff = abs(len(recordings) - track_count_hint)
         if best_mbid is None or diff < best_diff:
@@ -414,6 +410,8 @@ async def _resolve_artist_album_mbid(
             best_diff = diff
             if diff == 0:
                 break
+    if best_mbid is None and unreachable:
+        raise Unreachable(f"{unreachable} candidate tracklists not fetched")
     return best_mbid
 
 

@@ -170,7 +170,14 @@ async def _resolve_best_matching_mbid(
     at most ~6 additional MusicBrainz API calls — only on first resolve,
     after which the MBID is cached on the release row.
     """
-    candidates = await coverart_mod.search_release_candidates(artist, title)
+    try:
+        candidates = await coverart_mod.search_release_candidates(artist, title)
+    except coverart_mod.Unreachable as e:
+        log(
+            f"musicbrainz-enrich: release={release_id} MusicBrainz "
+            f"unreachable: {e}",
+        )
+        return None
     if not candidates:
         log(
             f"musicbrainz-enrich: release={release_id} no MusicBrainz "
