@@ -308,17 +308,18 @@ class HeartbeatHandlersMixin:
 
         Two mutually exclusive paths:
 
-        F3 — Confirmation path (``last_vinyl`` set AND has ``release_id``):
+        F3 — Confirmation path (``last_vinyl`` set AND has ``release_id``
+        or ``release_mbid``):
             Scoped scan against the locked release only. On confidence-gated
             hit: build payload from locked album metadata. On miss or hit:
             run coverage-driven pin-promotion side effects
             (``_schedule_coverage_promotion``). On miss: also run
             track-guess side effects.
 
-        F4 — Blind path (``last_vinyl`` is None OR has no ``release_id``):
-            Blind scan across ALL refs in ``fp_refs``. Applies the same two
-            confidence gates as F3. On hit: build payload from
-            ``discogs.sqlite`` via ``_build_blind_fingerprint_payload``.
+        F4 — Blind path (``last_vinyl`` is None OR has neither id):
+            Blind scan across ALL refs in both ``fp_refs`` stores. Applies
+            the same two confidence gates as F3. On hit: build payload from
+            the catalog via ``_build_blind_fingerprint_payload``.
             Does NOT call ``_schedule_coverage_promotion`` (requires a
             locked anchor) or ``_compute_track_guess`` (requires a locked
             tracklist). If the catalog lookup returns None, falls through as
@@ -397,8 +398,8 @@ class HeartbeatHandlersMixin:
         payload = _build_blind_fingerprint_payload(top, audio_source_label)
         if payload is None:
             log.info(
-                "fingerprint: position change to release=%s pos=%s but release not in discogs catalog — falling through",
-                top.release_id, top.track_position,
+                "fingerprint: position change to release=%s mbid=%s pos=%s but release not in catalog — falling through",
+                top.release_id, top.mbid, top.track_position,
             )
             return False
         state.unmatched_streak = 0
@@ -560,7 +561,7 @@ class HeartbeatHandlersMixin:
         set new anchor on strong hits, and publish.
 
         Returns True on successful publish, False when the release is absent
-        from the local discogs catalog (treat as miss). Must only be called
+        from the local catalog (treat as miss). Must only be called
         after both confidence gates have passed.
         """
         # Cascade-derived state must never overwrite Sonos-authoritative
@@ -573,10 +574,10 @@ class HeartbeatHandlersMixin:
             return True
         payload = _build_blind_fingerprint_payload(top, audio_source_label)
         if payload is None:
-            # Release not in local discogs catalog — treat as no match.
+            # Release not in the local catalog — treat as no match.
             log.info(
-                "fingerprint: blind matched release=%s not in discogs catalog — falling through",
-                top.release_id,
+                "fingerprint: blind matched release=%s mbid=%s not in catalog — falling through",
+                top.release_id, top.mbid,
             )
             return False
         state.unmatched_streak = 0
@@ -598,6 +599,7 @@ class HeartbeatHandlersMixin:
             if (
                 existing_anchor.get("track_position") != top.track_position
                 or existing_anchor.get("release_id") != top.release_id
+                or existing_anchor.get("mbid") != top.mbid
             ):
                 log.info(
                     "fingerprint: blind position/release changed %s/%s → %s/%s — releasing stale anchor",
@@ -627,11 +629,11 @@ class HeartbeatHandlersMixin:
     ) -> bool:
         """F4 blind fingerprint scan — no album lock.
 
-        Scans ALL refs in ``fp_refs`` without a release filter. Applies
-        the same two confidence gates as the confirmation path. On a
-        confidence-gated hit, builds the payload via
+        Scans ALL refs in both ``fp_refs`` stores without a release filter.
+        Applies the same two confidence gates as the confirmation path. On
+        a confidence-gated hit, builds the payload via
         ``_build_blind_fingerprint_payload`` (which fetches release metadata
-        from ``discogs.sqlite``).
+        from the catalog).
 
         Deliberately does NOT call ``_schedule_coverage_promotion`` (requires
         a locked album anchor — no lock exists here) or ``_compute_track_guess``
@@ -664,8 +666,8 @@ class HeartbeatHandlersMixin:
             )
             return False
         log.info(
-            "fingerprint: blind matched release=%s pos=%s hits=%d",
-            top.release_id, top.track_position, top.hits,
+            "fingerprint: blind matched release=%s mbid=%s pos=%s hits=%d",
+            top.release_id, top.mbid, top.track_position, top.hits,
         )
         return await self._blind_hit_publish(state, audio_source_label, top)
 

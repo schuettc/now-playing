@@ -5,7 +5,7 @@ import logging
 
 import recognize_proto
 
-from nowplaying.discogs import catalog as discogs_catalog
+from nowplaying import catalog as catalog_dispatch
 
 log = logging.getLogger(__name__)
 
@@ -55,14 +55,17 @@ def _build_blind_fingerprint_payload(  # skylos: ignore SKY-Q301 SKY-C304 — Wh
     """Build a full kiosk vinyl payload from a blind fingerprint hit.
 
     Called by the F4 blind-fingerprint-discovery path when the orchestrator
-    has no locked album. Fetches full release metadata from ``discogs.sqlite``
-    via :func:`discogs_catalog.get_release` and constructs a payload shaped
-    like the vinyl source path (artist, album, year, label, catno,
-    track_position, side, title, art_url, tracklist).
+    has no locked album. Fetches full release metadata via
+    :func:`catalog_dispatch.get_release` (``discogs.sqlite`` for a Discogs
+    hit, ``discovered.sqlite`` for an MBID hit) and constructs a payload
+    shaped like the vinyl source path (artist, album, year, label, catno,
+    track_position, side, title, art_url, tracklist). An MBID hit carries
+    ``release_mbid`` and no ``release_id``, and ``art_url`` only when the
+    discovered row has one.
 
     Returns ``None`` when:
-    - ``discogs_catalog.get_release`` returns ``None`` (release not in the
-      local catalog snapshot) — treat as a miss and fall through to NEEDS_ID.
+    - ``catalog_dispatch.get_release`` returns ``None`` (release not in the
+      local catalog) — treat as a miss and fall through to NEEDS_ID.
     - Any unexpected exception during catalog lookup (logged + swallowed).
 
     The caller (``_try_fingerprint_fallback``) must check for ``None`` before
@@ -70,20 +73,21 @@ def _build_blind_fingerprint_payload(  # skylos: ignore SKY-Q301 SKY-C304 — Wh
     like a fingerprint no-match.
 
     Read-only: this function never writes to fp_refs or promotes audio.
-    Promotion stays pin-driven only.
     """
     try:
-        rel = discogs_catalog.get_release(top.release_id)
+        rel = catalog_dispatch.get_release(
+            release_id=top.release_id, mbid=top.mbid,
+        )
     except Exception as e:  # noqa: BLE001
         log.warning(
-            "blind fingerprint: discogs catalog lookup failed for release=%s: %r",
-            top.release_id, e,
+            "blind fingerprint: catalog lookup failed for release=%s mbid=%s: %r",
+            top.release_id, top.mbid, e,
         )
         return None
     if rel is None:
         log.info(
-            "blind fingerprint: release=%s not in discogs catalog — treating as no match",
-            top.release_id,
+            "blind fingerprint: release=%s mbid=%s not in catalog — treating as no match",
+            top.release_id, top.mbid,
         )
         return None
 
@@ -132,8 +136,13 @@ def _build_blind_fingerprint_payload(  # skylos: ignore SKY-Q301 SKY-C304 — Wh
         "side": side,
         "title": track_title,
         "duration_seconds": track_duration_s,
-        "art_url": f"/art/{top.release_id}",
     }
+    if top.release_id is not None:
+        payload["art_url"] = f"/art/{top.release_id}"
+    else:
+        payload["release_mbid"] = top.mbid
+        if rel.get("art_url"):
+            payload["art_url"] = rel["art_url"]
     if tracklist:
         payload["tracklist"] = tracklist
     return payload

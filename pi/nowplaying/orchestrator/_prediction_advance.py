@@ -83,12 +83,13 @@ class _AdvanceMixin:
             if advanced_row is not None:
                 # Normalize to predicted-position shape (mirrors
                 # _advance_predicted_position's return) so downstream
-                # _build_predicted_payload can read release_id from
-                # state.last_vinyl. Without this normalization the raw
-                # tracklist-row shape (no release_id) crashed callers.
+                # _build_predicted_payload can look the release up.
+                # Without this normalization the raw tracklist-row shape
+                # (no release_id) crashed callers.
                 last_vinyl = state.last_vinyl or {}
                 return {
                     "release_id": last_vinyl.get("release_id"),
+                    "release_mbid": last_vinyl.get("release_mbid"),
                     "side": advanced_row.get("side") or last_vinyl.get("side"),
                     "track_position": (
                         advanced_row.get("position")
