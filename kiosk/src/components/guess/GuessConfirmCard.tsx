@@ -14,19 +14,20 @@ interface Props {
  *
  * Renders below TrackInfo in TrackLayout's left ShoulderColumn. The
  * card carries:
- *   - 4px amber drain strip on the top edge (60s countdown — no text)
+ *   - 4px amber drain strip on the top edge (drains over the guess's
+ *     lifetime — no text)
  *   - "BEST GUESS" eyebrow
  *   - Primary CTA with the predicted title baked in ("Yes, that's <title>")
  *   - Ghost button routing to the manual /identify flow
  *
  * No "No" button: there's no defensible "next guess" semantic without a
  * new backend endpoint, and the no-action path is the same as a No tap
- * (the 60s drain runs out, state-decay falls through to NEEDS_ID).
+ * (the drain runs out, state-decay falls through to NEEDS_ID).
  *
  * See docs/features/inline-confirm-card-predicted/.
  */
 export function GuessConfirmCard({ guess }: Props) {
-  const { onConfirm, onPickAnother } = useGuessConfirmHandlers(guess, 'card');
+  const { onConfirm, onPickAnother, lifetimeMs } = useGuessConfirmHandlers(guess, 'card');
 
   return (
     <motion.div
@@ -41,7 +42,7 @@ export function GuessConfirmCard({ guess }: Props) {
         border: '1px solid var(--sem-warn-edge)',
       }}
     >
-      <GuessDrainStrip durationMs={drainMs(guess)} />
+      <GuessDrainStrip durationMs={lifetimeMs} />
       <div className="px-5 pt-4 pb-5">
         <span
           className="block font-mono text-[13px] uppercase tracking-[0.32em]"
@@ -60,18 +61,6 @@ export function GuessConfirmCard({ guess }: Props) {
       </div>
     </motion.div>
   );
-}
-
-/**
- * Drain duration for the card's countdown strip. Backend-owned lifetime
- * (epic consolidate-guess-confidence-lifetime): drain over the guessed track's
- * remaining seconds; fall back to the fixed window only when the backend can't
- * supply a duration. Replaces the previously-hardcoded client 60s timer.
- */
-function drainMs(guess: Guess): number {
-  return guess.expires_in_s != null
-    ? guess.expires_in_s * 1000
-    : MOTION.guessTimeoutMs;
 }
 
 function GuessDrainStrip({ durationMs }: { durationMs: number }) {
