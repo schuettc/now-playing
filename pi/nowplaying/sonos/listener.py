@@ -110,12 +110,21 @@ def _build_initial_payload(coord: SoCo, info: dict, ti: dict) -> dict:
     }
 
 
-async def run_listener(zone_name: str, on_event: EventHandler, stop: asyncio.Event) -> None:
+async def run_listener(
+    zone_name: str,
+    on_event: EventHandler,
+    stop: asyncio.Event,
+    on_coord: Callable[[SoCo], None] | None = None,
+) -> None:
     """Subscribe to AVTransport on the named zone and dispatch events to on_event.
 
     Runs until ``stop`` is set.  Manages subscription renewal (via soco's
     built-in ``auto_renew``), a dead-listener watchdog, and a startup probe.
     Cleans up the subscription on shutdown.
+
+    ``on_coord`` receives the coordinator the listener is subscribed to:
+    once at start, and again whenever a resubscribe re-discovers the zone
+    (for example at a new address), so callers that poll the zone follow it.
     """
     loop = asyncio.get_running_loop()
 
@@ -124,6 +133,8 @@ async def run_listener(zone_name: str, on_event: EventHandler, stop: asyncio.Eve
     if coord is None:
         raise SystemExit(f"zone {zone_name!r} not found via SSDP discovery")
     log.info("[sonos] subscribing on %s (%s)", coord.player_name, coord.ip_address)
+    if on_coord is not None:
+        on_coord(coord)
 
     listener = _SonosListener(coord, on_event, loop)
     sup = _ListenerSupervisor(
@@ -134,6 +145,7 @@ async def run_listener(zone_name: str, on_event: EventHandler, stop: asyncio.Eve
         max_resub_failures=_MAX_RESUB_FAILURES,
         find_zone_fn=find_zone,
         build_initial_payload_fn=_build_initial_payload,
+        on_coord_change=on_coord,
     )
 
     await sup.subscribe_once()

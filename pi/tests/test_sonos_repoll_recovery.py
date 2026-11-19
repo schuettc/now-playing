@@ -33,14 +33,21 @@ TRACK = {
 }
 
 
-def _make_orch(source: str, *, has_metadata: bool, last_vinyl=None):
+def _make_orch(
+    source: str, *, has_metadata: bool, last_vinyl=None,
+    transport: str = "PLAYING",
+):
     from nowplaying.main import Orchestrator
 
     o = Orchestrator.__new__(Orchestrator)
     o.state = mock.MagicMock()
     o.state.sonos_source = source
+    o.state.sonos_state = transport
     o.state.sonos_has_metadata = has_metadata
     o.state.last_vinyl = last_vinyl
+    o.state.idled_source = None
+    o.state.idled_title = None
+    o.sonos_coord = mock.MagicMock(name="coord")
     o.on_sonos_event = mock.AsyncMock()
     return o
 
@@ -52,12 +59,46 @@ def test_repoll_recovers_airplay_that_started_without_metadata():
         "nowplaying.orchestrator._publish_enrichment.poll_track",
         new=mock.AsyncMock(return_value=dict(TRACK)),
     ):
-        _run(o._run_repoll_tick(mock.MagicMock()))
+        _run(o._run_repoll_tick())
     o.on_sonos_event.assert_awaited_once()
     ev = o.on_sonos_event.await_args.args[0]
     assert ev["title"] == "Someday You Will Be Loved"
     assert ev["artist"] == "Death Cab for Cutie"
     assert ev["source"] == "airplay"
+    assert ev["state"] == "PLAYING"
+
+
+def test_repoll_reports_the_real_transport_state_when_paused():
+    """A track change polled on a paused session is published as paused,
+    so it cannot cancel the pause-idle or tell the kiosk it is playing."""
+    o = _make_orch(
+        "airplay", has_metadata=True, transport="PAUSED_PLAYBACK",
+        last_vinyl={"title": "Crooked Teeth", "artist": TRACK["artist"]},
+    )
+    with mock.patch(
+        "nowplaying.orchestrator._publish_enrichment.poll_track",
+        new=mock.AsyncMock(return_value=dict(TRACK)),
+    ):
+        _run(o._run_repoll_tick())
+    ev = o.on_sonos_event.await_args.args[0]
+    assert ev["state"] == "PAUSED_PLAYBACK"
+
+
+def test_repoll_does_not_wake_a_session_that_idled_while_paused():
+    """The idle clears last_vinyl, so the polled title looks new. The
+    session is still paused on the same track: nothing may be dispatched."""
+    o = _make_orch(
+        "airplay", has_metadata=True, transport="PAUSED_PLAYBACK",
+        last_vinyl=None,
+    )
+    o.state.idled_source = "airplay"
+    o.state.idled_title = TRACK["title"]
+    with mock.patch(
+        "nowplaying.orchestrator._publish_enrichment.poll_track",
+        new=mock.AsyncMock(return_value=dict(TRACK)),
+    ):
+        _run(o._run_repoll_tick())
+    o.on_sonos_event.assert_not_awaited()
 
 
 def test_repoll_polls_even_when_has_metadata_is_false():
@@ -67,7 +108,7 @@ def test_repoll_polls_even_when_has_metadata_is_false():
     with mock.patch(
         "nowplaying.orchestrator._publish_enrichment.poll_track", new=poll,
     ):
-        _run(o._run_repoll_tick(mock.MagicMock()))
+        _run(o._run_repoll_tick())
     poll.assert_awaited_once()
 
 
@@ -80,7 +121,7 @@ def test_repoll_noop_when_sonos_genuinely_has_no_metadata():
         "nowplaying.orchestrator._publish_enrichment.poll_track",
         new=mock.AsyncMock(return_value=None),
     ):
-        _run(o._run_repoll_tick(mock.MagicMock()))
+        _run(o._run_repoll_tick())
     o.on_sonos_event.assert_not_awaited()
 
 
@@ -92,7 +133,7 @@ def test_repoll_skipped_for_non_sonos_sources(source):
     with mock.patch(
         "nowplaying.orchestrator._publish_enrichment.poll_track", new=poll,
     ):
-        _run(o._run_repoll_tick(mock.MagicMock()))
+        _run(o._run_repoll_tick())
     poll.assert_not_awaited()
     o.on_sonos_event.assert_not_awaited()
 
@@ -107,7 +148,7 @@ def test_repoll_does_not_republish_unchanged_airplay_track():
         "nowplaying.orchestrator._publish_enrichment.poll_track",
         new=mock.AsyncMock(return_value=dict(TRACK)),
     ):
-        _run(o._run_repoll_tick(mock.MagicMock()))
+        _run(o._run_repoll_tick())
     o.on_sonos_event.assert_not_awaited()
 
 
@@ -122,5 +163,65 @@ def test_repoll_still_reemits_unchanged_streaming_for_queue_advance():
         "nowplaying.orchestrator._publish_enrichment.poll_track",
         new=mock.AsyncMock(return_value=dict(TRACK)),
     ):
-        _run(o._run_repoll_tick(mock.MagicMock()))
+        _run(o._run_repoll_tick())
     o.on_sonos_event.assert_awaited_once()
+
+
+def test_repoll_polls_the_coordinator_currently_held():
+    """The listener replaces the coordinator after a re-discovery; the
+    next tick must poll the new one, and none at all while there is none."""
+    o = _make_orch("airplay", has_metadata=True, last_vinyl=None)
+    poll = mock.AsyncMock(return_value=dict(TRACK))
+    with mock.patch(
+        "nowplaying.orchestrator._publish_enrichment.poll_track", new=poll,
+    ):
+        o.sonos_coord = None
+        _run(o._run_repoll_tick())
+        poll.assert_not_awaited()
+
+        rediscovered = mock.MagicMock(name="rediscovered")
+        o.adopt_sonos_coord(rediscovered)
+        _run(o._run_repoll_tick())
+    poll.assert_awaited_once_with(rediscovered)
+
+
+def test_repoll_loop_keeps_running_without_a_coordinator_at_boot():
+    o = _make_orch("airplay", has_metadata=True, last_vinyl=None)
+    o.sonos_coord = None
+    o.stop = asyncio.Event()
+    o._run_repoll_tick = mock.AsyncMock(side_effect=lambda: o.stop.set())
+    with mock.patch(
+        "nowplaying.orchestrator._publish_enrichment.HEARTBEAT_INTERVAL_S", 0.01,
+    ):
+        _run(asyncio.wait_for(o.sonos_repoll_loop(), timeout=2))
+    o._run_repoll_tick.assert_awaited_once()
+
+
+def test_repoll_anchors_the_track_start_on_the_polled_position():
+    """A change found by the poll may be up to a tick old; the polled
+    position says how old, so the elapsed clock does not start late."""
+    from datetime import datetime, timedelta, timezone
+
+    o = _make_orch("airplay", has_metadata=True, last_vinyl=None)
+    polled = {**TRACK, "position_s": 12.0}
+    with mock.patch(
+        "nowplaying.orchestrator._publish_enrichment.poll_track",
+        new=mock.AsyncMock(return_value=polled),
+    ):
+        before = datetime.now(timezone.utc)
+        _run(o._run_repoll_tick())
+    ev = o.on_sonos_event.await_args.args[0]
+    started = datetime.fromisoformat(ev["track_started_at"].replace("Z", "+00:00"))
+    assert abs((before - timedelta(seconds=12) - started).total_seconds()) <= 2
+    assert "uri" not in ev
+    assert "raw_uri_prefix" not in ev
+
+
+def test_repoll_leaves_the_anchor_out_when_sonos_gives_no_position():
+    o = _make_orch("airplay", has_metadata=True, last_vinyl=None)
+    with mock.patch(
+        "nowplaying.orchestrator._publish_enrichment.poll_track",
+        new=mock.AsyncMock(return_value=dict(TRACK)),
+    ):
+        _run(o._run_repoll_tick())
+    assert "track_started_at" not in o.on_sonos_event.await_args.args[0]

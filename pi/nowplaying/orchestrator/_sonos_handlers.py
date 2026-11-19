@@ -1,6 +1,6 @@
 """SonosHandlersMixin — Sonos and capture event handlers.
 
-Contains: on_sonos_event, _handle_sticky_idle, _apply_source_transition,
+Contains: adopt_sonos_coord, on_sonos_event, _process_sonos_event, _handle_sticky_idle, _apply_source_transition,
 _maybe_cancel_idle_on_resume, _reconcile_capture_emit,
 _recover_unmatched_from_cache, _reset_for_non_idle_source,
 _maybe_arm_streaming_idle, on_capture_state, _handle_capture_silent,
@@ -37,7 +37,22 @@ class SonosHandlersMixin:
     No ``__init__`` defined here.
     """
 
+    def adopt_sonos_coord(self, coord) -> None:
+        """Take the coordinator the listener is subscribed to, so the
+        repoll and queue polls follow the zone when it is re-discovered.
+        """
+        self.sonos_coord = coord
+
     async def on_sonos_event(self, ev: dict) -> None:
+        """Handle one Sonos event (a NOTIFY, an enrich-republish or a
+        repoll tick). Each caller runs in its own task, so events are
+        taken one at a time in arrival order: the queue poll below awaits,
+        and an older event finishing late must not publish over a newer one.
+        """
+        async with self.state.sonos_event_lock:
+            await self._process_sonos_event(ev)
+
+    async def _process_sonos_event(self, ev: dict) -> None:
         state = self.state
         bcast = self.bcast
         try:
@@ -119,8 +134,8 @@ class SonosHandlersMixin:
 
     def _apply_source_transition(self, ev: dict, payload: dict) -> None:
         """Update state.sonos_source/state/has_metadata from the incoming
-        event, and on any source change clear cross-heartbeat agreement
-        and cancel any in-flight idle from the previous source.
+        event, and on any source change end the previous source's session
+        (lock, pin, anchor, prediction) and cancel its in-flight idle.
         """
         state = self.state
         previous_source = state.sonos_source
@@ -129,10 +144,12 @@ class SonosHandlersMixin:
         state.sonos_has_metadata = bool(payload.get("title"))
         if previous_source == state.sonos_source:
             return
-        state.pending_shazam_only.clear()
-        # Clear any stale track-guess so it can't be attached to the first
-        # publish after the source flip (e.g., vinyl guess leaked into AirPlay).
-        state.pending_guess = None
+        if state.user_track_pin is not None:
+            log.info(
+                "pin released: reason=source_change %s -> %s",
+                previous_source, state.sonos_source,
+            )
+        state.reset_vinyl_session()
         if state.idle_task is not None and not state.idle_task.done():
             log.info(
                 "idle retracted: source change %s -> %s",
@@ -161,9 +178,9 @@ class SonosHandlersMixin:
         state.idle_task = None
 
     def _reconcile_capture_emit(self) -> None:
-        """Reconcile capture emit state on every event — covers source
-        changes AND metadata appearing/disappearing during an AirPlay
-        session. Only update local state when signal delivery succeeded.
+        """Reconcile capture emit state on every event, so a source change
+        pauses or resumes capture and a failed signal is retried on the
+        next event. Only update local state when signal delivery succeeded.
         """
         state = self.state
         desired_paused = _should_pause_capture(state)
@@ -174,11 +191,10 @@ class SonosHandlersMixin:
             state.capture_emit_paused = desired_paused
 
     def _recover_unmatched_from_cache(self, payload: dict) -> dict:
-        """When a Sonos event arrives for a UFO202-listened source with
-        no title, prefer the last cached recognition for that same source
-        if we have one. Prevents flickering to "Unknown" during volume
-        changes or transport-only events that lack metadata. Returns the
-        (possibly replaced) payload.
+        """When a vinyl or AirPlay event arrives with no title, prefer the
+        last cached track for that same source if we have one. Prevents
+        flickering to "Unknown" during volume changes or transport-only
+        events that lack metadata. Returns the (possibly replaced) payload.
         """
         state = self.state
         if payload["source"] not in ("vinyl", "airplay") or payload["title"]:
@@ -190,29 +206,16 @@ class SonosHandlersMixin:
         return payload
 
     def _reset_for_non_idle_source(self, payload: dict) -> None:
-        """Source flipped to a no-idle-handling source (TV, line-in, etc.).
-        Clear caches, release the user pin, cancel any idle task.
+        """Every event on a no-idle-handling source (TV, radio, unknown):
+        keep the session state empty and cancel any idle task, whatever
+        set them since the source change.
         """
         state = self.state
         if payload["source"] in ("vinyl", "airplay", "streaming"):
             return
-        state.last_vinyl = None
-        state.last_vinyl_confidence_set_at = None
-        state.last_shazam_match_unix_ts = None
-        state.last_pin_unix_ts = None
-        state.last_unmatched_after_match_unix_ts = None
-        state.pending_shazam_only.clear()
-        state.recent_fp_hits.clear()
-        state.last_shazam_gated = None
-        state.recent_audible_edges.clear()
-        state.tracks_seen_since_audible_edge.clear()
-        state.audible_up_at_mono = None
-        state.recent_heartbeat_levels.clear()
         if state.user_track_pin is not None:
             log.info("pin released: reason=source_flip new_source=%s", payload["source"])
-        state.user_track_pin = None
-        state.pin_different_track_streak = 0
-        state.fingerprint_anchor = None
+        state.reset_vinyl_session()
         if state.idle_task is not None and not state.idle_task.done():
             state.idle_task.cancel()
             state.idle_task = None
@@ -242,13 +245,10 @@ class SonosHandlersMixin:
 
     async def on_capture_state(self, s: str) -> None:
         state = self.state
-        # Common guards: capture state events only apply to UFO202-listened
-        # sources (vinyl + AirPlay-without-Sonos-metadata). Streaming with
-        # Sonos metadata has its own publish path.
-        if (
-            state.sonos_source not in ("vinyl", "airplay")
-            or state.capture_emit_paused
-        ):
+        # Capture edges describe the turntable. Every other source is
+        # published from Sonos events, so an edge that slips through before
+        # capture is paused must not arm the vinyl idle or publish.
+        if state.sonos_source != "vinyl" or state.capture_emit_paused:
             return
         if s == "silent":
             self._handle_capture_silent()
@@ -268,10 +268,8 @@ class SonosHandlersMixin:
         state.predicted_position = None
         if state.idle_task is not None and not state.idle_task.done():
             return
-        # Tag with current source (vinyl or airplay-no-metadata) so
-        # the STOPPED publish stays accurate.
         state.idle_task = asyncio.create_task(
-            self._idle_after_delay(VINYL_IDLE_DELAY_S, state.sonos_source),
+            self._idle_after_delay(VINYL_IDLE_DELAY_S, "vinyl"),
         )
 
     async def _handle_capture_audible(self) -> None:
@@ -285,14 +283,11 @@ class SonosHandlersMixin:
         state.pending_shazam_only.clear()
         state.track_started_at = None
         log.info("audible: cleared per-side recognition state")
-        audio_source_label = (
-            "vinyl" if state.sonos_source == "vinyl" else "airplay"
-        )
+        audio_source_label = "vinyl"
         if state.last_vinyl is not None:
             # Cancel any in-flight idle timer FIRST so it doesn't
-            # fire 45s later and wipe the lock out from under the
-            # prediction we're about to publish (PR #109 review
-            # blocker).
+            # fire and wipe the lock out from under the prediction
+            # we're about to publish.
             if state.idle_task is not None and not state.idle_task.done():
                 state.idle_task.cancel()
                 state.idle_task = None
