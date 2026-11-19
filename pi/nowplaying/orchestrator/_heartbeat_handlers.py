@@ -236,6 +236,7 @@ class HeartbeatHandlersMixin:
         # stamped only here so it represents the *last Shazam-confirmed*
         # boundary, never a predicted-advance or fingerprint refresh.
         state.last_shazam_match_unix_ts = int(time.time())
+        state.last_shazam_match_offset_s = result.get("track_position_s")
         # Why: clearing the first-miss boundary here resets the gap so the
         # NEXT track's first miss restamps. See
         # docs/features/pin-position-ignores-predicted-advance-latency/.
@@ -729,10 +730,11 @@ class HeartbeatHandlersMixin:
 
         Declines unless last_vinyl is a genuinely off-Discogs release
         (release_id is None) carrying an mbid + track_position, a Shazam
-        confirm timestamp is set, the matched track's duration is known,
-        and the confirm is recent enough that ``now - confirm`` still lands
-        inside the track — a stale confirm would tag the ref at a wrong
-        position and poison the store.
+        confirm timestamp and match offset are set, and the matched
+        track's duration is known. The clip's position is the match offset
+        plus the time since the confirm; once that passes the end of the
+        track the audio belongs to the next one, so the seed declines
+        rather than file it under this track.
         """
         lv = self.state.last_vinyl
         if not isinstance(lv, dict):
@@ -744,14 +746,16 @@ class HeartbeatHandlersMixin:
         if not mbid or not track_position:
             return None
         ts = self.state.last_shazam_match_unix_ts
-        if not ts:
+        offset_s = self.state.last_shazam_match_offset_s
+        if not ts or offset_s is None:
             return None
         duration_s = _seed_track_duration(lv, track_position)
         if not duration_s:
             return None  # can't place the ref without a track length
-        elapsed = time.time() - ts
-        if elapsed < 0 or elapsed > duration_s:
-            return None  # stale confirm — would mis-place the ref
+        since_confirm = time.time() - ts
+        elapsed = float(offset_s) + since_confirm
+        if since_confirm < 0 or elapsed > duration_s:
+            return None  # past the end of the confirmed track
         return {
             "mbid": mbid,
             "track_position": track_position,
@@ -763,7 +767,8 @@ class HeartbeatHandlersMixin:
         self, wav_bytes: bytes, level_db: float,
     ) -> None:
         """Coverage-driven promotion — fires on every heartbeat where
-        EITHER a pin OR a fingerprint anchor is active AND audio is above
+        a pin, a fingerprint anchor or (discovered releases only) a recent
+        Shazam confirmation says which track is playing AND audio is above
         the silence floor, regardless of whether the fingerprint scan hit
         or missed.
 
@@ -775,7 +780,12 @@ class HeartbeatHandlersMixin:
         the pin was set (user mental model: "start fingerprinting from
         here"). Anchor path (fallback when no pin): ``track_position_s``
         is the last matched ref's position_s plus monotonic elapsed
-        since the anchor refresh — no wall-clock dependency.
+        since the anchor refresh — no wall-clock dependency. Seed path
+        (no pin, no usable anchor): see ``_resolve_mbid_seed``.
+
+        A discovered release (MBID, no release_id) goes through the same
+        coverage check and ``maybe_promote`` gates as a Discogs one,
+        against the discovered store.
 
         Side effect only; does not change the cascade's recognition verdict.
         """
@@ -846,23 +856,8 @@ class HeartbeatHandlersMixin:
             return
         if release_id is None and mbid is None:
             return
-        # MBID-keyed promotion bypasses the Discogs-cohort gates (cross-cohort
-        # guard + spacing/cap are release_id-keyed in vinyl.promotion). The
-        # UNIQUE constraint on discovery.fingerprint.fp_refs is the only gate
-        # against duplicate writes; that's sufficient given today's anchor-only
-        # discovered-promotion flow (no user pin on discovered releases yet).
-        if release_id is None:
-            log.info(
-                "promotion: coverage-gap (%s) mbid=%s pos=%s track_position_s=%.1f duration=%s — scheduling (discovered)",
-                drive, mbid, track_position, elapsed, duration_s,
-            )
-            asyncio.create_task(
-                asyncio.to_thread(
-                    discovery_fingerprint.add_ref,
-                    mbid, track_position, elapsed, wav_bytes,
-                ),
-            )
-            return
+        # A discovered release is keyed on its MBID in the discovered store.
+        store_key: dict = {} if release_id is not None else {"mbid": mbid}
         # Spatial coverage check — off the event loop (DB read).
         gap_found = await asyncio.to_thread(
             promotion.should_promote_for_coverage,
@@ -870,12 +865,13 @@ class HeartbeatHandlersMixin:
             track_position,
             elapsed,
             duration_s=duration_s,
+            **store_key,
         )
         if not gap_found:
             return
         log.info(
-            "promotion: coverage-gap (%s) release=%s pos=%s track_position_s=%.1f duration=%s — scheduling",
-            drive, release_id, track_position, elapsed, duration_s,
+            "promotion: coverage-gap (%s) release=%s mbid=%s pos=%s track_position_s=%.1f duration=%s — scheduling",
+            drive, release_id, mbid, track_position, elapsed, duration_s,
         )
         asyncio.create_task(
             promotion.maybe_promote(
@@ -884,6 +880,7 @@ class HeartbeatHandlersMixin:
                 track_position_s=elapsed,
                 wav_bytes=wav_bytes,
                 duration_s=duration_s,
+                **store_key,
             ),
         )
 

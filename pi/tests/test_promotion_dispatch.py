@@ -2,7 +2,8 @@
 
 When coverage promotion fires off a fingerprint anchor:
 - Anchor with ``release_id`` (Discogs) → ``vinyl.promotion.maybe_promote``.
-- Anchor with ``mbid`` (discovered) → ``discovery.fingerprint.add_ref``.
+- Anchor with ``mbid`` (discovered) → the same ``maybe_promote``, keyed on
+  the MBID, after the same coverage check.
 
 Exercises ``_schedule_coverage_promotion`` directly with a fabricated
 Orchestrator + anchor; mirrors ``test_orchestrator_coverage_promotion``'s
@@ -86,27 +87,42 @@ async def test_rid_anchor_routes_to_vinyl_promotion(orch, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_mbid_anchor_routes_to_discovery_fingerprint(orch, monkeypatch):
-    """Anchor with mbid set (no rid) → discovery.fingerprint.add_ref."""
+async def test_mbid_anchor_goes_through_the_promotion_gates(orch, monkeypatch):
+    """Anchor with mbid set (no rid) → coverage check, then maybe_promote,
+    both keyed on the MBID; never a direct add_ref."""
     orch.state.fingerprint_anchor = _make_mbid_anchor()
-    # should_promote_for_coverage must NOT be consulted on the discovered path
-    # (cohort gates are release_id-keyed). Sentinel: blow up if called.
-    monkeypatch.setattr(
-        promotion, "should_promote_for_coverage",
-        mock.MagicMock(side_effect=AssertionError(
-            "should_promote_for_coverage must not run on MBID-keyed promotion"
-        )),
-    )
-    rid_promote = mock.AsyncMock()
-    monkeypatch.setattr(promotion, "maybe_promote", rid_promote)
+    coverage = mock.MagicMock(return_value=True)
+    monkeypatch.setattr(promotion, "should_promote_for_coverage", coverage)
+    promote = mock.AsyncMock(return_value=True)
+    monkeypatch.setattr(promotion, "maybe_promote", promote)
     mbid_add = mock.MagicMock(return_value=1)
     monkeypatch.setattr(discovery_fingerprint, "add_ref", mbid_add)
 
-    with mock.patch("asyncio.create_task") as create_task_mock:
+    with mock.patch("asyncio.create_task"):
         await orch._schedule_coverage_promotion(_FAKE_WAV, _MUSIC_LEVEL)
 
-    assert create_task_mock.called, "expected asyncio.create_task for discovered promotion"
-    rid_promote.assert_not_called()
+    assert coverage.call_args.kwargs["mbid"] == "harvest-mb-1"
+    promote.assert_called_once()
+    assert promote.call_args.kwargs["mbid"] == "harvest-mb-1"
+    assert promote.call_args.kwargs["release_id"] is None
+    mbid_add.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_mbid_anchor_with_no_coverage_gap_promotes_nothing(
+    orch, monkeypatch,
+):
+    orch.state.fingerprint_anchor = _make_mbid_anchor()
+    monkeypatch.setattr(
+        promotion, "should_promote_for_coverage", lambda *a, **kw: False,
+    )
+    promote = mock.AsyncMock(return_value=True)
+    monkeypatch.setattr(promotion, "maybe_promote", promote)
+
+    with mock.patch("asyncio.create_task"):
+        await orch._schedule_coverage_promotion(_FAKE_WAV, _MUSIC_LEVEL)
+
+    promote.assert_not_called()
 
 
 @pytest.mark.asyncio

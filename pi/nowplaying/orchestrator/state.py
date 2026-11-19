@@ -29,6 +29,7 @@ class State:  # skylos: ignore SKY-Q501 — State is intentionally the orchestra
         self.last_vinyl = None
         self.last_vinyl_confidence_set_at = None
         self.last_shazam_match_unix_ts = None
+        self.last_shazam_match_offset_s = None
         self.last_unmatched_after_match_unix_ts = None
         self.last_pin_unix_ts = None
         self.pending_shazam_only.clear()
@@ -103,6 +104,12 @@ class State:  # skylos: ignore SKY-Q501 — State is intentionally the orchestra
         # source-flip / album-lock-change / idle.
         # See docs/features/pin-backfill-from-predicted-transition/.
         self.last_shazam_match_unix_ts: int | None = None
+        # Seconds into the track at which that Shazam match aligned, or
+        # None when Shazam gave no offset. Stamped with
+        # `last_shazam_match_unix_ts` and only meaningful while it is set.
+        # The discovered-store seed drive adds the time since the match to
+        # place a clip in the track.
+        self.last_shazam_match_offset_s: float | None = None
         # Unix wall-clock timestamp of the FIRST heartbeat that returned
         # unmatched after the most recent Shazam-confirmed match. Marks
         # the boundary where the prior track stopped being recognized —

@@ -489,3 +489,60 @@ def test_adaptive_cap_missing_duration_uses_floor(tmp_db: Path, monkeypatch):
         wav_bytes=_make_wav(seed=998), db_path=tmp_db,
         duration_s=None,
     )) is False
+
+
+# ── Discovered (MBID-keyed) store goes through the same gates ───────────
+
+
+@pytest.fixture
+def discovered_db(tmp_path: Path) -> Path:
+    from nowplaying.discovery import schema
+    db = tmp_path / "discovered.sqlite"
+    schema.init_db(db)
+    return db
+
+
+def _mbid_ref_count(db: Path, position: str) -> int:
+    import sqlite3
+    conn = sqlite3.connect(db)
+    try:
+        return conn.execute(
+            "SELECT COUNT(*) FROM fp_refs WHERE mbid='mb-1' AND track_position=?",
+            (position,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+
+def test_mbid_promotion_enforces_spacing(discovered_db: Path):
+    """Replaying the same stretch of a discovered track adds no second ref."""
+    def promote(at_s: float, seed: int) -> bool:
+        return _run(promotion.maybe_promote(
+            release_id=None, mbid="mb-1", track_position="A1",
+            track_position_s=at_s, wav_bytes=_make_wav(seed=seed),
+            db_path=discovered_db,
+        ))
+
+    assert promote(20.0, 1) is True
+    assert promote(20.4, 2) is False
+    assert _mbid_ref_count(discovered_db, "A1") == 1
+    assert promotion.should_promote_for_coverage(
+        None, "A1", 21.0, mbid="mb-1", db_path=discovered_db,
+    ) is False
+    assert promotion.should_promote_for_coverage(
+        None, "A1", 60.0, mbid="mb-1", db_path=discovered_db,
+    ) is True
+
+
+def test_mbid_promotion_refuses_audio_of_another_track(discovered_db: Path):
+    """A clip that fingerprint-matches A1's refs is not stored under A2."""
+    wav = _make_wav(seed=1)
+    assert _run(promotion.maybe_promote(
+        release_id=None, mbid="mb-1", track_position="A1",
+        track_position_s=0.0, wav_bytes=wav, db_path=discovered_db,
+    )) is True
+    assert _run(promotion.maybe_promote(
+        release_id=None, mbid="mb-1", track_position="A2",
+        track_position_s=0.0, wav_bytes=wav, db_path=discovered_db,
+    )) is False
+    assert _mbid_ref_count(discovered_db, "A2") == 0

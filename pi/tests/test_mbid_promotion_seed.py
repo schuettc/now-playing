@@ -1,17 +1,12 @@
-"""The MBID-keyed fingerprint store must be seeded from a Shazam
-confirmation, the way the user pin seeds the Discogs store.
+"""The MBID-keyed fingerprint store is seeded from a Shazam confirmation,
+the way the user pin seeds the Discogs store.
 
-Without a seed the discovered cascade is a closed loop: an MBID anchor
-can only be born from a fingerprint hit against the discovered store,
-and writing to that store requires an MBID anchor. Live evidence: 113
-discovered releases, 239 vinyl plays off-Discogs, 0 discovered fp_refs,
-0 promotions ever scheduled.
-
-These drive the seed from the fields production actually sets on a
-Shazam-confirmed discovered release — state.last_vinyl (release_mbid,
-track_position, tracklist, release_id=None) and
-state.last_shazam_match_unix_ts — with NO hand-built anchor. That is the
-reachability the old anchor-injecting test never had.
+The seed places the clip at the Shazam match offset plus the time since
+the confirm, and declines once that runs past the end of the confirmed
+track: from there the audio belongs to the next track. These drive the
+seed from the fields production sets on a Shazam-confirmed discovered
+release (state.last_vinyl, state.last_shazam_match_unix_ts,
+state.last_shazam_match_offset_s) with no hand-built anchor.
 """
 from __future__ import annotations
 
@@ -20,8 +15,8 @@ from unittest import mock
 
 import pytest
 
-from nowplaying.discovery import fingerprint as discovery_fingerprint
 from nowplaying.orchestrator.streaming_idle import MUSIC_DB
+from nowplaying.vinyl import promotion
 
 _MONO_NOW = 2_000_000.0
 _WALL_NOW = 1_787_000_000
@@ -35,7 +30,7 @@ def _discovered_last_vinyl(track_position="A1", duration=191):
         "release_mbid": "mb-plans-1",
         "track_position": track_position,
         "tracklist": [
-            {"position": "A1", "title": "Marching Bands", "duration_seconds": 252},
+            {"position": "B1", "title": "Marching Bands", "duration_seconds": 252},
             {"position": track_position, "title": "Soul Meets Body",
              "duration_seconds": duration},
         ],
@@ -61,28 +56,64 @@ def orch(monkeypatch):
     o.state.fingerprint_anchor = None
     o.state.last_vinyl = None
     o.state.last_shazam_match_unix_ts = None
+    o.state.last_shazam_match_offset_s = None
     o.state.sonos_source = "vinyl"
     return o
 
 
-@pytest.mark.asyncio
-async def test_mbid_seed_drive_fires_from_shazam_confirmed_discovered_release(
-    orch, monkeypatch,
-):
-    """The red test: a recent Shazam confirm of a discovered release must
-    schedule a discovered fp_ref, with no pin and no anchor."""
-    orch.state.last_vinyl = _discovered_last_vinyl()
-    orch.state.last_shazam_match_unix_ts = _WALL_NOW - 20
-    to_thread = mock.MagicMock(return_value=mock.MagicMock())
-    monkeypatch.setattr(asyncio, "to_thread", to_thread)
+def _spy_promotion(monkeypatch) -> mock.AsyncMock:
+    monkeypatch.setattr(
+        promotion, "should_promote_for_coverage", lambda *a, **kw: True,
+    )
+    promote = mock.AsyncMock(return_value=True)
+    monkeypatch.setattr(promotion, "maybe_promote", promote)
+    return promote
+
+
+async def _schedule(orch) -> None:
     with mock.patch("asyncio.create_task"):
         await orch._schedule_coverage_promotion(_FAKE_WAV, _MUSIC_LEVEL)
-    to_thread.assert_called_once()
-    args = to_thread.call_args.args
-    assert args[0] is discovery_fingerprint.add_ref
-    assert args[1] == "mb-plans-1"          # mbid
-    assert args[2] == "A1"                   # track_position
-    assert abs(args[3] - 20) < 0.5           # elapsed ≈ now - confirm ts
+
+
+@pytest.mark.asyncio
+async def test_seed_places_the_ref_at_offset_plus_time_since_confirm(
+    orch, monkeypatch,
+):
+    orch.state.last_vinyl = _discovered_last_vinyl(duration=191)
+    orch.state.last_shazam_match_unix_ts = _WALL_NOW - 20
+    orch.state.last_shazam_match_offset_s = 100.0
+    promote = _spy_promotion(monkeypatch)
+    await _schedule(orch)
+    promote.assert_called_once()
+    kw = promote.call_args.kwargs
+    assert kw["release_id"] is None
+    assert kw["mbid"] == "mb-plans-1"
+    assert kw["track_position"] == "A1"
+    assert abs(kw["track_position_s"] - 120) < 0.5
+    assert kw["duration_s"] == 191
+
+
+@pytest.mark.asyncio
+async def test_seed_declines_once_past_the_end_of_the_confirmed_track(
+    orch, monkeypatch,
+):
+    """Confirmed 180 s into a 191 s track, 20 s ago: the needle is on the
+    next track now, so the clip must not be filed under this one."""
+    orch.state.last_vinyl = _discovered_last_vinyl(duration=191)
+    orch.state.last_shazam_match_unix_ts = _WALL_NOW - 20
+    orch.state.last_shazam_match_offset_s = 180.0
+    promote = _spy_promotion(monkeypatch)
+    await _schedule(orch)
+    promote.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_seed_declines_without_a_match_offset(orch, monkeypatch):
+    orch.state.last_vinyl = _discovered_last_vinyl(duration=191)
+    orch.state.last_shazam_match_unix_ts = _WALL_NOW - 20
+    promote = _spy_promotion(monkeypatch)
+    await _schedule(orch)
+    promote.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -90,33 +121,16 @@ async def test_mbid_seed_not_used_when_anchor_present(orch, monkeypatch):
     """Precedence: a live MBID anchor wins over the seed (no double-write)."""
     orch.state.last_vinyl = _discovered_last_vinyl(track_position="A1")
     orch.state.last_shazam_match_unix_ts = _WALL_NOW - 20
+    orch.state.last_shazam_match_offset_s = 100.0
     orch.state.fingerprint_anchor = {
         "release_id": None, "mbid": "mb-plans-1", "track_position": "B2",
         "monotonic_ts": _MONO_NOW - 5, "duration_seconds": 200,
         "last_matched_ref_position_s": 30.0,
     }
-    to_thread = mock.MagicMock(return_value=mock.MagicMock())
-    monkeypatch.setattr(asyncio, "to_thread", to_thread)
-    with mock.patch("asyncio.create_task"):
-        await orch._schedule_coverage_promotion(_FAKE_WAV, _MUSIC_LEVEL)
-    to_thread.assert_called_once()
-    assert to_thread.call_args.args[2] == "B2"   # anchor's position, not seed's
-
-
-@pytest.mark.asyncio
-async def test_mbid_seed_ignored_when_shazam_stamp_stale(orch, monkeypatch):
-    """A confirm older than the track duration would tag the ref at a
-    wildly wrong position — decline rather than poison the store."""
-    orch.state.last_vinyl = _discovered_last_vinyl(duration=191)
-    orch.state.last_shazam_match_unix_ts = _WALL_NOW - 500
-    to_thread = mock.MagicMock(return_value=mock.MagicMock())
-    monkeypatch.setattr(asyncio, "to_thread", to_thread)
-    add_ref = mock.MagicMock()
-    monkeypatch.setattr(discovery_fingerprint, "add_ref", add_ref)
-    with mock.patch("asyncio.create_task") as create_task:
-        await orch._schedule_coverage_promotion(_FAKE_WAV, _MUSIC_LEVEL)
-    to_thread.assert_not_called()
-    create_task.assert_not_called()
+    promote = _spy_promotion(monkeypatch)
+    await _schedule(orch)
+    promote.assert_called_once()
+    assert promote.call_args.kwargs["track_position"] == "B2"
 
 
 @pytest.mark.asyncio
@@ -128,8 +142,7 @@ async def test_discogs_lock_never_takes_mbid_seed(orch, monkeypatch):
     lv["release_id"] = 3112846
     orch.state.last_vinyl = lv
     orch.state.last_shazam_match_unix_ts = _WALL_NOW - 20
-    to_thread = mock.MagicMock(return_value=mock.MagicMock())
-    monkeypatch.setattr(asyncio, "to_thread", to_thread)
-    with mock.patch("asyncio.create_task"):
-        await orch._schedule_coverage_promotion(_FAKE_WAV, _MUSIC_LEVEL)
-    to_thread.assert_not_called()      # seed declined; no discovered add_ref
+    orch.state.last_shazam_match_offset_s = 100.0
+    promote = _spy_promotion(monkeypatch)
+    await _schedule(orch)
+    promote.assert_not_called()

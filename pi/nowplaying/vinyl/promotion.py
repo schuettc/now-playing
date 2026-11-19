@@ -1,10 +1,15 @@
-"""Pin-driven promotion of user-confirmed clips into the fingerprint DB.
+"""Promotion of clips of a known track into a fingerprint store.
 
-Called fire-and-forget from the orchestrator heartbeat handler on every
-Shazam-miss + fingerprint-miss heartbeat where the user has an active
-track pin. The pin is ground truth (the user explicitly confirmed
-identity via /api/identify or the kiosk tracklist); promotion writes
+Called fire-and-forget from the orchestrator's coverage-promotion step
+whenever it knows which track is playing and where in it the clip sits:
+from a user pin (ground truth, set via /api/identify or the kiosk
+tracklist), from a strong fingerprint anchor, or, for a discovered
+(MBID-only) release, from a recent Shazam confirmation. Promotion writes
 fingerprints for that track so the next play matches locally.
+
+A Discogs release (``release_id``) is stored in ``fingerprint.db``; a
+discovered release (``mbid``) in ``discovered.sqlite``. Both go through
+the same gates.
 
 Layered gates inside `maybe_promote`:
 
@@ -14,15 +19,9 @@ Layered gates inside `maybe_promote`:
    position strongly, refuse — the user-supplied label disagrees with
    the existing audio. First cohort on a release bypasses this gate
    (nothing to compare against).
-2. Static cohort cap (`MAX_REFS_PER_COHORT = 30`).
+2. Cohort cap (`max_refs_for_duration`, at least 30).
 3. Static spacing on `track_position_s` (`MIN_REF_SPACING_S = 12s`).
-4. Atomic `fingerprint.add_ref` with a UNIQUE constraint as a final
-   line of defense.
-
-Shazam-hit auto-promotion was removed (epic
-`confirmed-fingerprint-coverage`): populating the DB from Shazam hits
-covers the tracks Shazam already knows — the wrong population. The DB
-exists to remember what Shazam can't.
+4. Atomic `add_ref` with a UNIQUE constraint as a final line of defense.
 """
 from __future__ import annotations
 
@@ -31,7 +30,11 @@ import logging
 import math
 import sqlite3
 from pathlib import Path
+from types import ModuleType
+from typing import NamedTuple
 
+from nowplaying.discovery import fingerprint as discovery_fingerprint
+from nowplaying.discovery import schema as discovery_schema
 from nowplaying.vinyl import fingerprint
 
 log = logging.getLogger("nowplaying.promotion")
@@ -78,16 +81,67 @@ def max_refs_for_duration(duration_s: float | None) -> int:
 GUARD_THRESHOLD = 30
 
 
+class _Store(NamedTuple):
+    """The fingerprint store a release's refs live in."""
+    key: int | str  # release_id (Discogs) or mbid (discovered)
+    label: str  # how the release is named in log lines
+    engine: ModuleType  # the module whose match / add_ref serve this store
+    db_path: Path
+    cohort_positions_sql: str
+    other_positions_count_sql: str
+
+
+def _store_for(
+    release_id: int | None, mbid: str | None, db_path: Path | None,
+) -> _Store:
+    """Pick the store for a release: Discogs when ``release_id`` is set,
+    discovered otherwise. ``db_path`` None means the store's own DB."""
+    if release_id is not None:
+        return _Store(
+            key=release_id,
+            label=f"release={release_id}",
+            engine=fingerprint,
+            db_path=db_path or fingerprint.DEFAULT_DB_PATH,
+            cohort_positions_sql=(
+                "SELECT track_position_s FROM fp_refs "
+                "WHERE release_id = ? AND track_position = ?"
+            ),
+            other_positions_count_sql=(
+                "SELECT COUNT(*) FROM fp_refs "
+                "WHERE release_id = ? AND track_position != ?"
+            ),
+        )
+    if not mbid:
+        raise ValueError("promotion needs a release_id or an mbid")
+    return _Store(
+        key=mbid,
+        label=f"mbid={mbid}",
+        engine=discovery_fingerprint,
+        db_path=db_path or discovery_schema.DISCOVERED_DB_PATH,
+        cohort_positions_sql=(
+            "SELECT track_position_s FROM fp_refs "
+            "WHERE mbid = ? AND track_position = ?"
+        ),
+        other_positions_count_sql=(
+            "SELECT COUNT(*) FROM fp_refs "
+            "WHERE mbid = ? AND track_position != ?"
+        ),
+    )
+
+
 async def maybe_promote(
-    release_id: int,
+    release_id: int | None,
     track_position: str,
     track_position_s: float,
     wav_bytes: bytes,
     *,
+    mbid: str | None = None,
     duration_s: float | None = None,
-    db_path: Path = fingerprint.DEFAULT_DB_PATH,
+    db_path: Path | None = None,
 ) -> bool:
-    """Promote a user-confirmed clip into the fingerprint DB.
+    """Promote a clip of a known track into its release's fingerprint
+    store: ``fingerprint.db`` for ``release_id``, ``discovered.sqlite``
+    for an ``mbid`` with no ``release_id``.
 
     Returns True if a new ref landed, False if any gate rejected it
     or any underlying error logged a warning.
@@ -100,23 +154,22 @@ async def maybe_promote(
 
     Fire-and-forget from the heartbeat handler — never raises.
     """
+    store = _store_for(release_id, mbid, db_path)
     if not track_position:
         log.info(
-            "promotion: release=%s pos=<empty> result=skipped reason=no-track-position",
-            release_id,
+            "promotion: %s pos=<empty> result=skipped reason=no-track-position",
+            store.label,
         )
         return False
     # Cross-cohort guard — refuse to write a ref labeled position Y
     # for a release whose existing refs strongly fingerprint-match
     # the incoming audio at a DIFFERENT position. Defensive; never
     # blocks first-cohort bootstrap.
-    if not await _cross_cohort_guard_passes(
-        release_id, track_position, wav_bytes, db_path=db_path,
-    ):
+    if not await _cross_cohort_guard_passes(store, track_position, wav_bytes):
         return False
     # Cohort + spacing gates (duration-adaptive cap, always run).
     if not await asyncio.to_thread(
-        _cohort_gate_passes, release_id, track_position, track_position_s, db_path,
+        _cohort_gate_passes, store, track_position, track_position_s,
         duration_s,
     ):
         return False
@@ -125,28 +178,27 @@ async def maybe_promote(
         # constraint is the second line of defense against duplicates
         # racing past the gate.
         await asyncio.to_thread(
-            fingerprint.add_ref,
-            release_id, track_position, track_position_s, wav_bytes, db_path,
+            store.engine.add_ref,
+            store.key, track_position, track_position_s, wav_bytes,
+            store.db_path,
         )
     except Exception as e:  # noqa: BLE001
         log.warning(
-            "promotion: release=%s pos=%s result=error reason=%r",
-            release_id, track_position, e,
+            "promotion: %s pos=%s result=error reason=%r",
+            store.label, track_position, e,
         )
         return False
     log.info(
-        "promotion: release=%s pos=%s track_position_s=%.1f result=added",
-        release_id, track_position, track_position_s,
+        "promotion: %s pos=%s track_position_s=%.1f result=added",
+        store.label, track_position, track_position_s,
     )
     return True
 
 
 async def _cross_cohort_guard_passes(
-    release_id: int,
+    store: _Store,
     target_position: str,
     wav_bytes: bytes,
-    *,
-    db_path: Path,
 ) -> bool:
     """Refuse promotion when the audio fingerprint-matches a different
     cohort on the same release.
@@ -154,27 +206,27 @@ async def _cross_cohort_guard_passes(
     Returns True (allow) when:
       - The release has no refs for any other position (first-cohort
         bootstrap — nothing to compare).
-      - `fingerprint.match` returns no hits at `min_hits=GUARD_THRESHOLD`.
+      - the store's `match` returns no hits at `min_hits=GUARD_THRESHOLD`.
       - The top hit's `track_position` equals the target (same cohort,
         which is expected — let the static gates decide).
       - Any error occurs (defensive: a transient DB issue shouldn't
         block a legitimate promotion).
 
     Returns False (refuse) only when there's a strong match for a
-    position other than the target — i.e. the user-supplied label
+    position other than the target — i.e. the supplied label
     contradicts existing audio evidence on this release.
     """
     try:  # skylos: ignore SKY-L004 — wide catch-all is the documented behavior per docstring "any error → allow (defensive)"; narrowing the scope would lose that guarantee
         # First, cheap precheck: any refs for OTHER positions on this
         # release? If not, bypass the (more expensive) match call.
         others = await asyncio.to_thread(
-            _count_other_position_refs, release_id, target_position, db_path,
+            _count_other_position_refs, store, target_position,
         )
         if others == 0:
             return True
         hits = await asyncio.to_thread(
-            fingerprint.match, wav_bytes, release_id, GUARD_THRESHOLD,
-            db_path=db_path,
+            store.engine.match, wav_bytes, store.key, GUARD_THRESHOLD,
+            db_path=store.db_path,
         )
         if not hits:
             return True
@@ -188,9 +240,9 @@ async def _cross_cohort_guard_passes(
         # See docs/features/advance-on-shazam-quiet-records/.
         if len(hits) >= 2 and top.hits < 2 * hits[1].hits:
             log.info(
-                "promotion: release=%s pos=%s guard allows "
+                "promotion: %s pos=%s guard allows "
                 "(ambiguous cohorts top=%s@%d runner_up=%s@%d)",
-                release_id, target_position,
+                store.label, target_position,
                 top.track_position, top.hits,
                 hits[1].track_position, hits[1].hits,
             )
@@ -199,35 +251,29 @@ async def _cross_cohort_guard_passes(
         # min_hits). The refused log below already records the hits count,
         # which is sufficient for threshold calibration over time.
         log.info(
-            "promotion: release=%s pos=%s result=refused "
+            "promotion: %s pos=%s result=refused "
             "reason=audio-matches-different-cohort "
             "(pinned=%s matched=%s hits=%d threshold=%d)",
-            release_id, target_position,
+            store.label, target_position,
             target_position, top.track_position, top.hits, GUARD_THRESHOLD,
         )
         return False
     except Exception as e:  # noqa: BLE001
         log.warning(
-            "promotion: guard failed release=%s pos=%s reason=%r",
-            release_id, target_position, e,
+            "promotion: guard failed %s pos=%s reason=%r",
+            store.label, target_position, e,
         )
         return True
 
 
-def _count_other_position_refs(
-    release_id: int, target_position: str, db_path: Path,
-) -> int:
-    """Count refs for `release_id` whose track_position is NOT
-    `target_position`. Returns 0 on error (treated as bypass by the
-    guard's exception handling)."""
-    conn = sqlite3.connect(db_path)
+def _count_other_position_refs(store: _Store, target_position: str) -> int:
+    """Count the release's refs whose track_position is NOT
+    `target_position`. A DB error propagates to the guard, which allows
+    the promotion."""
+    conn = sqlite3.connect(store.db_path)
     try:
         row = conn.execute(
-            """
-            SELECT COUNT(*) FROM fp_refs
-            WHERE release_id = ? AND track_position != ?
-            """,
-            (release_id, target_position),
+            store.other_positions_count_sql, (store.key, target_position),
         ).fetchone()
     finally:
         conn.close()
@@ -235,10 +281,9 @@ def _count_other_position_refs(
 
 
 def _cohort_gate_passes(
-    release_id: int,
+    store: _Store,
     track_position: str,
     track_position_s: float,
-    db_path: Path,
     duration_s: float | None = None,
 ) -> bool:
     """Return True if a new ref for this cohort would pass cap + spacing
@@ -250,13 +295,9 @@ def _cohort_gate_passes(
     """
     cap = max_refs_for_duration(duration_s)
     try:
-        with sqlite3.connect(db_path) as conn:
+        with sqlite3.connect(store.db_path) as conn:
             rows = conn.execute(
-                """
-                SELECT track_position_s FROM fp_refs
-                WHERE release_id = ? AND track_position = ?
-                """,
-                (release_id, track_position),
+                store.cohort_positions_sql, (store.key, track_position),
             ).fetchall()
     except sqlite3.OperationalError as e:
         # First-ever promotion: DB may not have the schema yet because
@@ -264,23 +305,23 @@ def _cohort_gate_passes(
         # something is misconfigured — log and skip rather than try to
         # init_db here (avoids a startup ordering dependency).
         log.warning(
-            "promotion: release=%s pos=%s result=error reason=db-not-ready (%r)",
-            release_id, track_position, e,
+            "promotion: %s pos=%s result=error reason=db-not-ready (%r)",
+            store.label, track_position, e,
         )
         return False
     existing_positions = [row[0] for row in rows]
     if len(existing_positions) >= cap:
         log.info(
-            "promotion: release=%s pos=%s result=skipped reason=cohort-full (%d/%d)",
-            release_id, track_position, len(existing_positions), cap,
+            "promotion: %s pos=%s result=skipped reason=cohort-full (%d/%d)",
+            store.label, track_position, len(existing_positions), cap,
         )
         return False
     for existing_s in existing_positions:
         if abs(existing_s - track_position_s) < MIN_REF_SPACING_S:
             log.info(
-                "promotion: release=%s pos=%s result=skipped reason=too-close-to-existing "
+                "promotion: %s pos=%s result=skipped reason=too-close-to-existing "
                 "(this=%.1f existing=%.1f spacing=%.1f)",
-                release_id, track_position, track_position_s,
+                store.label, track_position, track_position_s,
                 existing_s, MIN_REF_SPACING_S,
             )
             return False
@@ -295,19 +336,21 @@ COVERAGE_SPACING_S = 15.0
 
 
 def should_promote_for_coverage(
-    release_id: int,
+    release_id: int | None,
     track_position: str,
     track_position_s: float,
     *,
+    mbid: str | None = None,
     spacing_s: float = COVERAGE_SPACING_S,
     duration_s: float | None = None,
-    db_path: Path = fingerprint.DEFAULT_DB_PATH,
+    db_path: Path | None = None,
 ) -> bool:
     """Return True if a new ref should be promoted at ``track_position_s``
     to fill a coverage gap.
 
     Spatial check: queries existing fp_refs for the cohort
-    (``release_id`` + ``track_position``) and returns True when no ref
+    (``release_id`` or, without one, ``mbid``, + ``track_position``) and
+    returns True when no ref
     exists within ``± spacing_s / 2`` seconds of ``track_position_s``.
 
     Also returns False (no promotion needed) when the cohort has already
@@ -321,42 +364,39 @@ def should_promote_for_coverage(
     """
     if not track_position:
         return False
+    store = _store_for(release_id, mbid, db_path)
     cap = max_refs_for_duration(duration_s)
     half_window = spacing_s / 2.0
     try:
-        with sqlite3.connect(db_path) as conn:
+        with sqlite3.connect(store.db_path) as conn:
             rows = conn.execute(
-                """
-                SELECT track_position_s FROM fp_refs
-                WHERE release_id = ? AND track_position = ?
-                """,
-                (release_id, track_position),
+                store.cohort_positions_sql, (store.key, track_position),
             ).fetchall()
     except Exception as e:  # noqa: BLE001
         log.warning(
-            "coverage-check: release=%s pos=%s result=error reason=%r",
-            release_id, track_position, e,
+            "coverage-check: %s pos=%s result=error reason=%r",
+            store.label, track_position, e,
         )
         return False
     existing_positions = [row[0] for row in rows]
     if len(existing_positions) >= cap:
         log.debug(
-            "coverage-check: release=%s pos=%s result=skip reason=cohort-full (%d/%d)",
-            release_id, track_position, len(existing_positions), cap,
+            "coverage-check: %s pos=%s result=skip reason=cohort-full (%d/%d)",
+            store.label, track_position, len(existing_positions), cap,
         )
         return False
     for existing_s in existing_positions:
         if abs(existing_s - track_position_s) <= half_window:
             log.debug(
-                "coverage-check: release=%s pos=%s result=skip "
+                "coverage-check: %s pos=%s result=skip "
                 "reason=ref-exists-nearby (this=%.1f existing=%.1f window=±%.1f)",
-                release_id, track_position,
+                store.label, track_position,
                 track_position_s, existing_s, half_window,
             )
             return False
     log.debug(
-        "coverage-check: release=%s pos=%s track_position_s=%.1f result=gap-found",
-        release_id, track_position, track_position_s,
+        "coverage-check: %s pos=%s track_position_s=%.1f result=gap-found",
+        store.label, track_position, track_position_s,
     )
     return True
 
