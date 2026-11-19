@@ -200,3 +200,23 @@ async def test_gap_after_fingerprint_match_ends_the_anchor():
         await orch._schedule_coverage_promotion(b"RIFF", -20.0)
         await asyncio.sleep(0)
     promote.assert_not_called()
+
+
+def test_sonos_event_during_a_prediction_keeps_the_predicted_track():
+    """16:08:11: the ten-minute Sonos resubscribe sent a vinyl event with no
+    title; the confirmed A1 payload (`match_method=shazam`) was published in
+    place of the prediction on screen and relabelled the predicted history
+    row as `shazam`."""
+    state = _state_a1_confirmed()
+    _predict_a2(state, started_s_ago=60)
+    orch = Orchestrator.__new__(Orchestrator)
+    orch.state = state
+    event = {"ts": "2026-11-19T16:08:11Z", "state": "PLAYING",
+             "source": "vinyl", "title": None}
+
+    with mock.patch("nowplaying.catalog.get_release", return_value=RELEASE):
+        payload = orch._recover_unmatched_from_cache(event)
+
+    assert payload["track_position"] == "A2"
+    assert payload["match_method"] == "predicted"
+    assert payload["state"] == "PLAYING"

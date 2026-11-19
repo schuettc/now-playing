@@ -192,14 +192,20 @@ class SonosHandlersMixin:
 
     def _recover_unmatched_from_cache(self, payload: dict) -> dict:
         """When a vinyl or AirPlay event arrives with no title, prefer the
-        last cached track for that same source if we have one. Prevents
-        flickering to "Unknown" during volume changes or transport-only
-        events that lack metadata. Returns the (possibly replaced) payload.
+        track on screen for that same source if we have one: the active
+        vinyl prediction, else the last cached track. Prevents flickering to
+        "Unknown" during volume changes or transport-only events that lack
+        metadata. Returns the (possibly replaced) payload.
         """
         state = self.state
         if payload["source"] not in ("vinyl", "airplay") or payload["title"]:
             return payload
         cached = state.last_vinyl
+        if payload["source"] == "vinyl":
+            # last_vinyl is the last confirmed track; publishing it over a
+            # prediction would move the display back and relabel the
+            # predicted history row as confirmed.
+            cached = self._current_prediction_payload(state, "vinyl") or cached
         if cached is not None and cached.get("source") == payload["source"]:
             return {**cached, "ts": payload["ts"], "state": payload["state"]}
         payload["match_method"] = "unmatched"

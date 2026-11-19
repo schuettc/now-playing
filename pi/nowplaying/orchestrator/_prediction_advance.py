@@ -26,6 +26,26 @@ log = logging.getLogger("nowplaying.main")
 class _AdvanceMixin:
     """Predicted-advance helpers.  Mixed into PredictionMixin."""
 
+    @staticmethod
+    def _current_prediction_payload(state: "State", source: str) -> dict | None:
+        """The payload for the prediction on screen, or None when there is no
+        active prediction or it can't be assembled (catalog miss)."""
+        if state.predicted_position is None or state.last_vinyl is None:
+            return None
+        payload = _build_predicted_payload(
+            state.last_vinyl, state.predicted_position, source,
+        )
+        if payload is None:
+            return None
+        payload["guess"] = {
+            "position": state.predicted_position["track_position"],
+            "title": payload.get("title") or state.predicted_position.get("title"),
+            "confidence": "medium",
+            "source": "heuristic",
+        }
+        enrich_guess_contract(payload)
+        return payload
+
     async def _republish_current_prediction(
         self, state: "State", source: str, broadcaster,
     ) -> bool:
@@ -37,20 +57,9 @@ class _AdvanceMixin:
         published, False if the prediction couldn't be assembled
         (catalog miss).
         """
-        if state.predicted_position is None or state.last_vinyl is None:
-            return False
-        payload = _build_predicted_payload(
-            state.last_vinyl, state.predicted_position, source,
-        )
+        payload = self._current_prediction_payload(state, source)
         if payload is None:
             return False
-        payload["guess"] = {
-            "position": state.predicted_position["track_position"],
-            "title": payload.get("title") or state.predicted_position.get("title"),
-            "confidence": "medium",
-            "source": "heuristic",
-        }
-        enrich_guess_contract(payload)
         await broadcaster.publish(self._anchor_and_publish(payload))
         try:
             await history.record_play(payload)
