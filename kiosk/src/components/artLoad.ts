@@ -39,14 +39,18 @@ export function retryDelayOf(s: ArtLoadState): number | null {
   return s.phase === 'waiting' ? RETRY_DELAYS_MS[s.attempt] : null;
 }
 
-/** True once the target has failed to load and there is no image to keep. */
+/**
+ * True once the target has failed to load and there is no image to keep. A
+ * layer shows one album, so an image it already loaded is that album's cover
+ * and stays when a later URL fails.
+ */
 export function showsNoArt(s: ArtLoadState): boolean {
   if (s.shown !== null || s.phase === 'loaded') return false;
   return s.phase !== 'loading' || s.attempt > 0;
 }
 
 function onError(s: ArtLoadState): ArtLoadState {
-  if (s.attempt >= RETRY_DELAYS_MS.length) return { ...s, phase: 'failed', shown: null };
+  if (s.attempt >= RETRY_DELAYS_MS.length) return { ...s, phase: 'failed' };
   return { ...s, phase: 'waiting' };
 }
 

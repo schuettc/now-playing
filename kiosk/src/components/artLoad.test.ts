@@ -63,17 +63,17 @@ describe('artLoadReducer', () => {
     expect(s.shown).toBe('/art-cache/a?u=x&v=1');
   });
 
-  it('ends on NO ART, not the stale image, when every retry fails', () => {
+  it('keeps the album\'s loaded cover when a later URL for the same layer fails every retry', () => {
     let s = artLoadReducer(initialArtLoad('/art-cache/a'), {
       type: 'loaded',
       url: '/art-cache/a',
     });
     s = artLoadReducer(s, { type: 'target', src: '/art-cache/gone' });
     s = failAndRetry(failAndRetry(failAndRetry(s)));
-    expect(s.shown).toBe('/art-cache/a');
     s = artLoadReducer(s, { type: 'error', url: loadingUrlOf(s)! });
-    expect(s.shown).toBeNull();
-    expect(showsNoArt(s)).toBe(true);
+    expect(s.phase).toBe('failed');
+    expect(s.shown).toBe('/art-cache/a');
+    expect(showsNoArt(s)).toBe(false);
     expect(retryDelayOf(s)).toBeNull();
     expect(loadingUrlOf(s)).toBeNull();
   });
