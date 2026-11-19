@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { deriveIdentifyState } from './useIdentifyState';
+import { deriveIdentifyState, pinOutlived } from './useIdentifyState';
 // pinPosition exposure tested indirectly via TappableTrackRow's
 // integration; the hook lacks render-test infrastructure
 // (@testing-library/react not installed).
@@ -389,5 +389,41 @@ describe('deriveIdentifyState', () => {
     expect(
       deriveIdentifyState(null, null, null, null, t + 1_000, t),
     ).toBe('identifying');
+  });
+});
+
+describe('pinOutlived', () => {
+  const pinAt = 1_000_000;
+  const graduated = pinAt + MOTION.pinGraduationMs;
+
+  it('keeps the pin through its 50s window, whatever the payload shows', () => {
+    // The backend has not acknowledged the pin yet, or auto-recognition
+    // disagrees: the user's assertion holds until graduation.
+    expect(pinOutlived(pl({ track_position: 'A1' }), pinAt, 100, 'A2', graduated - 1)).toBe(false);
+    expect(pinOutlived(pl({ release_id: 7 }), pinAt, 100, 'A2', graduated - 1)).toBe(false);
+  });
+
+  it('keeps a graduated pin while the payload still shows the pinned track', () => {
+    expect(pinOutlived(pl({ track_position: 'A2' }), pinAt, 100, 'A2', graduated)).toBe(false);
+  });
+
+  it('drops a graduated pin once the payload moves to another track or record', () => {
+    expect(pinOutlived(pl({ track_position: 'A3' }), pinAt, 100, 'A2', graduated)).toBe(true);
+    expect(pinOutlived(pl({ release_id: 7, track_position: 'A2' }), pinAt, 100, 'A2', graduated)).toBe(true);
+  });
+
+  it('keeps the pin across a gap with no payload', () => {
+    expect(pinOutlived(null, pinAt, 100, 'A2', graduated)).toBe(false);
+  });
+
+  it('with the pin dropped, a later predicted play of the pinned track asks to confirm', () => {
+    const predicted = pl({
+      track_position: 'A2',
+      match_method: 'predicted',
+      guess: { position: 'A2', title: 'X', confidence: 'high', source: 'heuristic', confirmable: true },
+    });
+    expect(deriveIdentifyState(predicted, null, null, null, graduated + 86_400_000, null)).toBe(
+      'awaiting-confirm',
+    );
   });
 });
