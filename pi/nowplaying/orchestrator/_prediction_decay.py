@@ -28,16 +28,16 @@ log = logging.getLogger("nowplaying.main")
 
 
 def _track_lifetime_elapsed(state: "State", age: float) -> bool:
-    """True when the current track's expected play time is up — the state-decay
-    trigger. With a known duration + start, decay once we're past the track's
-    end (track-remaining ≤ 0), so a predicted/guessed track lives as long as the
-    track itself instead of a flat ~45s. Falls back to the flat STATE_DECAY_S
-    confidence-stamp age when the duration is unknown.
-    Epic consolidate-guess-confidence-lifetime / C3.
+    """True when the shown track's expected play time is up — the state-decay
+    trigger. The shown track is the prediction when one is active, else the
+    confirmed lock: a predicted track is judged on its own length from its own
+    start, not on the track it advanced from. With a known duration + start,
+    decay once we're past the track's end (track-remaining ≤ 0). Falls back to
+    the flat STATE_DECAY_S confidence-stamp age when either is unknown.
     """
-    lv = state.last_vinyl or {}
-    duration = lv.get("duration_seconds")
-    started = lv.get("track_started_at")
+    shown = state.predicted_position or state.last_vinyl or {}
+    duration = shown.get("duration_seconds")
+    started = shown.get("track_started_at")
     if duration is not None and started:
         return float(duration) - _elapsed_in_track_s(started) <= 0
     return age >= STATE_DECAY_S
@@ -113,10 +113,10 @@ class _DecayMixin:
             return False
         now_mono = asyncio.get_running_loop().time()
         age = now_mono - stamped_at
-        # Decay when the track's expected play time is up — track-remaining ≤ 0
-        # when a duration is known, else the flat STATE_DECAY_S backstop. This
-        # lets a predicted/guessed track persist for its real length instead of
-        # a flat ~45s. See docs/features/guess-decay-on-track-remaining/.
+        # Decay when the shown track's expected play time is up — track-remaining
+        # ≤ 0 when a duration is known, else the flat STATE_DECAY_S backstop.
+        # This lets a predicted/guessed track persist for its real length instead
+        # of a flat ~45s. See docs/features/guess-decay-on-track-remaining/.
         if not _track_lifetime_elapsed(state, age):
             return False
         # Coexistence: active pin suppresses decay (user is authoritative).
@@ -132,9 +132,11 @@ class _DecayMixin:
             )
             return False
         log.info(
-            "state-decay: last_vinyl=%r past expected track end "
+            "state-decay: last_vinyl=%r shown=%s past expected track end "
             "(stamp age=%.1fs) — forcing needs-id",
-            (state.last_vinyl or {}).get("title"), age,
+            (state.last_vinyl or {}).get("title"),
+            (state.predicted_position or state.last_vinyl or {}).get("track_position"),
+            age,
         )
         # Reset streak/stamps before publishing — the decay path bypasses
         # the normal streak machine and neither _try_advance_prediction nor

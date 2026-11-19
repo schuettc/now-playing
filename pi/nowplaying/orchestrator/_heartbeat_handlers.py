@@ -766,7 +766,7 @@ class HeartbeatHandlersMixin:
             "elapsed": elapsed,
         }
 
-    async def _schedule_coverage_promotion(  # skylos: ignore SKY-Q301 SKY-C304 — Why: CC 11 / 88 lines come from two independent drive paths (pin vs anchor) each with early-return guards; splitting to sub-helpers would require threading 6+ local variables through call boundaries with no net clarity gain
+    async def _schedule_coverage_promotion(  # skylos: ignore SKY-Q301 SKY-C304 — Why: CC 12 / 94 lines come from two independent drive paths (pin vs anchor) each with early-return guards; splitting to sub-helpers would require threading 6+ local variables through call boundaries with no net clarity gain
         self, wav_bytes: bytes, level_db: float,
     ) -> None:
         """Coverage-driven promotion — fires on every heartbeat where
@@ -789,6 +789,8 @@ class HeartbeatHandlersMixin:
         A discovered release (MBID, no release_id) goes through the same
         coverage check and ``maybe_promote`` gates as a Discogs one,
         against the discovered store.
+
+        Never promotes at or past the track's known duration.
 
         Side effect only; does not change the cascade's recognition verdict.
         """
@@ -858,6 +860,10 @@ class HeartbeatHandlersMixin:
         if not track_position:
             return
         if release_id is None and mbid is None:
+            return
+        if duration_s is not None and elapsed >= float(duration_s):
+            # At or past the track's known length the clip is not this
+            # track's audio: a ref saved here would match the next track.
             return
         # A discovered release is keyed on its MBID in the discovered store.
         store_key: dict = {} if release_id is not None else {"mbid": mbid}

@@ -26,6 +26,26 @@ log = logging.getLogger("nowplaying.main")
 class _AdvanceMixin:
     """Predicted-advance helpers.  Mixed into PredictionMixin."""
 
+    @staticmethod
+    def _current_prediction_payload(state: "State", source: str) -> dict | None:
+        """The payload for the prediction on screen, or None when there is no
+        active prediction or it can't be assembled (catalog miss)."""
+        if state.predicted_position is None or state.last_vinyl is None:
+            return None
+        payload = _build_predicted_payload(
+            state.last_vinyl, state.predicted_position, source,
+        )
+        if payload is None:
+            return None
+        payload["guess"] = {
+            "position": state.predicted_position["track_position"],
+            "title": payload.get("title") or state.predicted_position.get("title"),
+            "confidence": "medium",
+            "source": "heuristic",
+        }
+        enrich_guess_contract(payload)
+        return payload
+
     async def _republish_current_prediction(
         self, state: "State", source: str, broadcaster,
     ) -> bool:
@@ -37,20 +57,9 @@ class _AdvanceMixin:
         published, False if the prediction couldn't be assembled
         (catalog miss).
         """
-        if state.predicted_position is None or state.last_vinyl is None:
-            return False
-        payload = _build_predicted_payload(
-            state.last_vinyl, state.predicted_position, source,
-        )
+        payload = self._current_prediction_payload(state, source)
         if payload is None:
             return False
-        payload["guess"] = {
-            "position": state.predicted_position["track_position"],
-            "title": payload.get("title") or state.predicted_position.get("title"),
-            "confidence": "medium",
-            "source": "heuristic",
-        }
-        enrich_guess_contract(payload)
         await broadcaster.publish(self._anchor_and_publish(payload))
         try:
             await history.record_play(payload)
@@ -148,16 +157,6 @@ class _AdvanceMixin:
             return False
         if track_started_at_override is not None:
             payload["track_started_at"] = track_started_at_override
-        # Stamp the back-dated start onto the prediction so a later pin on
-        # this track can derive an elapsed-aware TTL (known-elapsed path)
-        # instead of falling back to full-duration-from-tap. The override
-        # is the same value seeded onto the payload above; when no override
-        # was supplied, fall back to the payload's own start (the
-        # per-method RECOGNITION_LEAD_S back-date set by _build_predicted_payload).
-        # See docs/features/advance-on-shazam-quiet-records/.
-        advanced["track_started_at"] = (
-            track_started_at_override or payload.get("track_started_at")
-        )
         # Commit state + publish.
         state.predicted_position = advanced
         state.unmatched_streak = 0
@@ -176,7 +175,15 @@ class _AdvanceMixin:
             advanced["side"], advanced["track_position"],
             payload.get("title"),
         )
-        await broadcaster.publish(self._anchor_and_publish(payload))
+        published = self._anchor_and_publish(payload)
+        # Stamp the predicted track's own start and length onto the prediction:
+        # the track guess, state-decay and a later pin's elapsed-aware TTL all
+        # measure the track on screen from these. The start is the one the
+        # publish settled on (the override, or the audible-edge back-date).
+        # See docs/features/advance-on-shazam-quiet-records/.
+        advanced["track_started_at"] = published.get("track_started_at")
+        advanced["duration_seconds"] = published.get("duration_seconds")
+        await broadcaster.publish(published)
         # Why: refresh the confidence stamp so state-decay (which measures
         # age since last_vinyl_confidence_set_at) doesn't kill this fresh
         # predicted publish ~15s later — the prior stamp was set by the

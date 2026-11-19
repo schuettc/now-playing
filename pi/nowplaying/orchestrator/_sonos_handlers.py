@@ -192,14 +192,20 @@ class SonosHandlersMixin:
 
     def _recover_unmatched_from_cache(self, payload: dict) -> dict:
         """When a vinyl or AirPlay event arrives with no title, prefer the
-        last cached track for that same source if we have one. Prevents
-        flickering to "Unknown" during volume changes or transport-only
-        events that lack metadata. Returns the (possibly replaced) payload.
+        track on screen for that same source if we have one: the active
+        vinyl prediction, else the last cached track. Prevents flickering to
+        "Unknown" during volume changes or transport-only events that lack
+        metadata. Returns the (possibly replaced) payload.
         """
         state = self.state
         if payload["source"] not in ("vinyl", "airplay") or payload["title"]:
             return payload
         cached = state.last_vinyl
+        if payload["source"] == "vinyl":
+            # last_vinyl is the last confirmed track; publishing it over a
+            # prediction would move the display back and relabel the
+            # predicted history row as confirmed.
+            cached = self._current_prediction_payload(state, "vinyl") or cached
         if cached is not None and cached.get("source") == payload["source"]:
             return {**cached, "ts": payload["ts"], "state": payload["state"]}
         payload["match_method"] = "unmatched"
@@ -258,14 +264,13 @@ class SonosHandlersMixin:
 
     def _handle_capture_silent(self) -> None:
         """Sustained silence → arm idle timer that clears the kiosk.
-        Also clear any active prediction: sustained silent means side
-        flip or LP end, and predictions must not carry across — the next
-        audible on a new side needs a Shazam confirm before predictions
-        can resume.
+        The active prediction is kept: five seconds of quiet is as often
+        the gap between two tracks as a side flip, and the next audible
+        edge must advance from the predicted track, not from the last
+        confirmed one. The idle timer clears it when the quiet lasts.
         """
         state = self.state
         self._record_audible_edge_for_llm(state, "silent")
-        state.predicted_position = None
         if state.idle_task is not None and not state.idle_task.done():
             return
         state.idle_task = asyncio.create_task(
@@ -282,6 +287,10 @@ class SonosHandlersMixin:
         self._record_audible_edge_for_llm(state, "audible")
         state.pending_shazam_only.clear()
         state.track_started_at = None
+        # A fingerprint anchor describes the audio before this edge. Past a
+        # quiet gap it must not hold the display on that track or tag new
+        # refs with it; the next strong match on fresh audio sets it again.
+        state.fingerprint_anchor = None
         log.info("audible: cleared per-side recognition state")
         audio_source_label = "vinyl"
         if state.last_vinyl is not None:

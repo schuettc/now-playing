@@ -12,6 +12,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from nowplaying.orchestrator.guess import _guess_is_dismissed
+from nowplaying.orchestrator.prediction import _elapsed_in_track_s
 from nowplaying.vinyl.levels import MUSIC_DB
 
 if TYPE_CHECKING:
@@ -330,14 +331,17 @@ class TrackGuessMixin:
         elapsed_since_audible_up_s: float,
     ) -> float | None:
         """Estimate the current position on the side (seconds from the side's
-        start), anchored to the confirmed track so the LLM does a window
-        lookup instead of summing durations.
+        start).
 
         Pin-anchored when a user pin is live — stable across predicted-advance
         drift (which is what reinforced the racing): ``cum_start(pin pos) +
-        initial_track_position_s + pin age``. Otherwise assume the needle
-        dropped at the side's first track and use elapsed-since-needle-drop.
-        Returns None when neither input is usable.
+        initial_track_position_s + pin age``. Otherwise, while a predicted
+        track is showing: ``cum_start(predicted pos) + time since that track
+        started`` — the audible-edge clock restarts at every quiet gap between
+        tracks, so on its own it reads as "first track of the side" right
+        after a gap. With neither, assume the needle dropped at the side's
+        first track and use elapsed-since-audible-up.
+        Returns None when no input is usable.
         """
         pin = getattr(state, "user_track_pin", None)
         if isinstance(pin, dict) and pin.get("track_position"):
@@ -347,6 +351,11 @@ class TrackGuessMixin:
             if cs is not None and init is not None and ts is not None:
                 age = asyncio.get_event_loop().time() - float(ts)
                 return cs + float(init) + age
+        predicted = getattr(state, "predicted_position", None)
+        if isinstance(predicted, dict) and predicted.get("track_started_at"):
+            cs = _cum_start_s(side_tracklist, predicted.get("track_position"))
+            if cs is not None:
+                return cs + _elapsed_in_track_s(predicted["track_started_at"])
         if elapsed_since_audible_up_s and elapsed_since_audible_up_s > 0:
             return float(elapsed_since_audible_up_s)
         return None
@@ -391,15 +400,14 @@ class TrackGuessMixin:
         elapsed_since_audible_up_s: float,
     ) -> dict | None:
         """Deterministic track guess: locate the track whose cumulative
-        ``[start, end)`` window contains the confirmed-track-anchored estimated
-        side position.
+        ``[start, end)`` window contains the estimated side position.
 
         Replaces the LLM position math, which proved unreliable at the one
         mechanical step that matters here — the interval comparison (it placed
         an estimate of 100s inside A2's [190,367] window and raced the kiosk
-        ahead of the music). The estimate itself is anchored to the confirmed
-        track (pin-stable). A monotonic guard then prevents the guess from ever
-        moving backward on the side. Returns None when there's no estimate or no
+        ahead of the music). The estimate is anchored to the pin or the predicted
+        track when there is one. A monotonic guard then prevents the guess from
+        ever moving behind the track on screen. Returns None when there's no estimate or no
         match, so the caller falls through to the predicted_position heuristic.
         See docs/features/advance-on-shazam-quiet-records/.
         """
@@ -411,7 +419,13 @@ class TrackGuessMixin:
         pos = _position_for_side_offset(side_tracklist, est)
         if not pos:
             return None
-        current_pos = (state.last_vinyl or {}).get("track_position")
+        # The track on screen: the prediction when one is active, else the
+        # confirmed lock.
+        predicted = state.predicted_position
+        current_pos = (
+            predicted.get("track_position") if isinstance(predicted, dict)
+            else (state.last_vinyl or {}).get("track_position")
+        )
         guarded = self._guard_no_backward_side_pos(side_tracklist, current_pos, pos)
         if guarded != pos:
             log.info(
