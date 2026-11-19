@@ -52,7 +52,7 @@ Expect `features: fingerprint=on llm=on|off`. If `fingerprint=off`, the cascade 
 ```bash
 journalctl -u nowplaying-orchestrator -n 300 --no-pager | grep -E "capture (heartbeat|instant|silent|audible):" | tail -20
 ```
-Look at `level_db=` on the `capture heartbeat:` lines. During music it should average around -25 to -15 dB. Below -35 dB suggests the signal is too quiet (check pre-amp / line-in routing). `capture silent:` / `capture audible:` lines mark the gate transitions between music and silence.
+Look at `level_db=` on the `capture heartbeat:` lines. During music it should average around -25 to -15 dB. Below -30 dB (the music threshold) suggests the signal is too quiet (check pre-amp / line-in routing); below -34 dB the capture gate counts it as silence and stops emitting heartbeats. `capture silent:` / `capture audible:` lines mark the gate transitions between music and silence.
 
 ## LLM-assist activity
 
@@ -60,7 +60,7 @@ Look at `level_db=` on the `capture heartbeat:` lines. During music it should av
 # Was LLM enabled at last boot?
 journalctl -u nowplaying-orchestrator --no-pager | grep -E "features:" | tail -1
 
-# Recent LLM verdicts (each marker corresponds to one of the four hooks)
+# Recent LLM verdicts, plus the track-guess lines for the BEST GUESS card
 journalctl -u nowplaying-orchestrator -n 500 --no-pager | grep -E "shazam-relevance:|advance-track:|track-change-llm:|track-guess:|llm: .*call failed"
 ```
 
@@ -69,7 +69,7 @@ Interpret:
 - `shazam-relevance: rejected — <reason>` — `judge_shazam_result` blocked a cross-album Shazam hit. No log line when accepted.
 - `advance-track: LLM advances to index=N position=X` / `LLM says stay on <title>` — `judge_advance` decided an end-of-side advance target.
 - `track-change-llm: decision=advance|hold confidence=X.XX advance_to=Y` — `decide_track_change` override on Rule A's mid-track suppression.
-- `track-guess: LLM picked position=X confidence=...` / `track-guess: heuristic pos=X` — `judge_track_guess` for the kiosk BEST GUESS card (LLM vs heuristic fallback).
+- `track-guess: window pos=X (est=Ns)` — the kiosk BEST GUESS card's position, computed from elapsed side time against the tracklist (no LLM call). Variants: `window pos=X would move backward from Y — holding`, `window pos=X suppressed (dismissed by user)`, `suppressed reason=dead_air|end_of_side`.
 - `llm: <method> call failed: <repr>` — API timeout, rate limit, or parse failure. Throttled to once per exception type per 300s.
 
 For a live color-coded tail during a listening session: `pi/scripts/monitor_llm.sh`.

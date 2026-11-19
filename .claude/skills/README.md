@@ -4,7 +4,7 @@ This directory contains project-local skills that activate automatically when yo
 
 ## Install
 
-The install is staged across one coordinator and six phase skills. You don't invoke them by name — describe what you're doing and the right skill fires.
+The install is staged across one coordinator, six phase skills and one optional phase. You don't invoke them by name — describe what you're doing and the right skill fires.
 
 | Skill | When it fires |
 |-------|---------------|
@@ -15,6 +15,7 @@ The install is staged across one coordinator and six phase skills. You don't inv
 | `nowplaying-setup-accounts` | "Get a Discogs token." |
 | `nowplaying-setup-install` | "Install the backend / run uv sync / sync my catalog." |
 | `nowplaying-setup-services` | "Install the systemd services / open the kiosk." |
+| `nowplaying-setup-lastfm` | Optional. "Set up Last.fm / enable scrobbling." |
 
 The phases are sequential. The coordinator detects state (does the repo exist on the Pi? is the catalog synced? are services running?) and routes you to the right phase — even if you come back to the install mid-way.
 

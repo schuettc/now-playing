@@ -25,7 +25,7 @@ ssh nowplaying-pi 'cd ~/now-playing && sudo NOWPLAYING_USER=pi bash pi/systemd/i
 
 The script installs **both** units:
 
-- `nowplaying-orchestrator.service` — the FastAPI + audio capture + recognition + Sonos listener.
+- `nowplaying-orchestrator.service` — the aiohttp server + audio capture + recognition + Sonos listener.
 - `nowplaying-kiosk.service` — the Chromium kiosk launcher (only meaningful on Pis with a display + graphical session).
 
 ## Step 2: Verify both services are active
@@ -44,11 +44,12 @@ Expected highlights:
 
 ```
 features: fingerprint=off llm=off
-capture started: device=USB Audio CODEC... silence_db=-15.0 heartbeat_s=15.0
-sonos: connected to zone=<your zone name>
+capture started: device=USB Audio CODEC... silence_db=-34.0 heartbeat_s=15.0
+[sonos] discovering zone '<your zone name>'...
+[sonos] subscribing on <your zone name> (<zone ip>)
 ```
 
-If the capture line is missing, the USB device wasn't ready in time — see the boot-timing note below. If the sonos line is missing, the zone name in `.env` doesn't match what the SoCo discovery returned.
+If the capture line is missing, the USB device wasn't ready in time — see the boot-timing note below. If `[sonos] discovering zone` is not followed by `[sonos] subscribing on`, the zone name in `.env` doesn't match any zone SoCo discovery returned: the orchestrator exits with `zone '<name>' not found via SSDP discovery` and systemd restarts it every 10 seconds.
 
 ## Step 3: Confirm the HTTP server is reachable
 
@@ -58,7 +59,7 @@ From the Pi:
 ssh nowplaying-pi 'curl -fsS http://localhost:8080/health'
 ```
 
-Expect `ok`. Then from the Mac (or any device on the LAN):
+Expect `{"ok": true}`. Then from the Mac (or any device on the LAN):
 
 ```bash
 curl -fsS http://nowplaying-pi.local:8080/health
@@ -80,7 +81,7 @@ If the kiosk display is attached to the Pi and a graphical session is running, t
 
 - **No record playing:** a clock face. This is the idle state.
 - **Record playing for ~15 seconds:** the kiosk swaps to a now-playing card. First-recognition latency is roughly one capture heartbeat (~15s) plus a Shazam roundtrip (~1–2s).
-- **Record stops:** clock returns after ~50 seconds (5s of silence detection + 45s idle timer).
+- **Record stops:** clock returns after ~2 minutes (5s of silence detection + 120s idle timer).
 
 ## Step 5 (optional): Enable local fingerprint fallback
 

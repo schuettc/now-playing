@@ -70,7 +70,7 @@ journalctl -u nowplaying-orchestrator --since "1 hour ago" --no-pager | grep "ca
 ### Discogs sync hangs or fails
 Network issue, bad token, or rate-limited. Verify auth:
 ```bash
-curl -fsS "https://api.discogs.com/users/$DISCOGS_USERNAME" \
+curl -fsS "https://api.discogs.com/oauth/identity" \
   -H "Authorization: Discogs token=$DISCOGS_TOKEN" | head -20
 ```
 

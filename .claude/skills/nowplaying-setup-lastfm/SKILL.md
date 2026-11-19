@@ -44,10 +44,10 @@ The repo ships a helper script: `pi/scripts/lastfm_auth.py`.
 **Run it locally on the Mac** (easier — browser is right there):
 
 ```bash
-cd ~/GitHub/schuettc/now-playing/pi
+cd <your clone>/pi
 LASTFM_API_KEY=<api-key-from-step-1> \
 LASTFM_API_SECRET=<shared-secret-from-step-1> \
-.venv/bin/python scripts/lastfm_auth.py
+python3 scripts/lastfm_auth.py
 ```
 
 OR **on the Pi** (also works; `uv` invocation):
