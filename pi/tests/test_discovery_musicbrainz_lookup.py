@@ -242,6 +242,41 @@ def test_lookup_by_artist_album_miss_stamps_negative_cache(monkeypatch):
     assert marked == [("Nobody", "Nothing")]
 
 
+def test_unreachable_release_fetch_does_not_stamp_negative(monkeypatch):
+    """MusicBrainz answers 503 for the release: retry on the next play."""
+    from nowplaying.discovery import musicbrainz_lookup as mbl
+
+    monkeypatch.setattr(mbl, "_negative_cached", lambda a, b: False)
+    marked = []
+    monkeypatch.setattr(mbl, "_mark_negative", lambda a, b: marked.append((a, b)))
+
+    async def _fake_fetch_mbid(artist, album, timeout_s=15.0):
+        return ("some-mbid", None)
+
+    monkeypatch.setattr("nowplaying.coverart.fetch_release_mbid", _fake_fetch_mbid)
+    with patch("aiohttp.ClientSession", return_value=_MockSession([_MockResp(503, {})])):
+        out = _run(mbl.lookup_by_artist_album("X", "Y"))
+    assert out is None
+    assert marked == []
+
+
+def test_release_not_found_stamps_negative(monkeypatch):
+    from nowplaying.discovery import musicbrainz_lookup as mbl
+
+    monkeypatch.setattr(mbl, "_negative_cached", lambda a, b: False)
+    marked = []
+    monkeypatch.setattr(mbl, "_mark_negative", lambda a, b: marked.append((a, b)))
+
+    async def _fake_fetch_mbid(artist, album, timeout_s=15.0):
+        return ("some-mbid", None)
+
+    monkeypatch.setattr("nowplaying.coverart.fetch_release_mbid", _fake_fetch_mbid)
+    with patch("aiohttp.ClientSession", return_value=_MockSession([_MockResp(404, {})])):
+        out = _run(mbl.lookup_by_artist_album("X", "Y"))
+    assert out is None
+    assert marked == [("X", "Y")]
+
+
 def test_lookup_by_artist_album_negative_cache_short_circuits(monkeypatch):
     """When negative cache says we've already tried this album, return
     None without hitting the network."""

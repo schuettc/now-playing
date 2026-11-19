@@ -77,6 +77,23 @@ def test_run_isrc_duration_negative_cache_on_none():
     mock_setter.assert_not_called()
 
 
+def test_run_isrc_duration_unreachable_is_retried_later():
+    """MusicBrainz could not be reached: the ISRC is not written off."""
+    isrc = "TRANSIENT001"
+    rp._isrc_no_duration.discard(isrc)
+
+    async def _run():
+        with patch.object(
+            rp.musicbrainz_lookup,
+            "recording_length_by_isrc",
+            new=AsyncMock(side_effect=rp.musicbrainz_lookup.Unreachable("503")),
+        ):
+            await rp._run_isrc_duration(isrc, release_id=42, mbid=None, position="A1")
+
+    asyncio.run(_run())
+    assert isrc not in rp._isrc_no_duration
+
+
 def test_run_isrc_duration_discovered_path():
     """MB returns 200s and only mbid is set: discovered setter is called."""
     rp._isrc_no_duration.discard("DISCOVERED001")

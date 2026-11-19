@@ -152,7 +152,8 @@ _in_flight_discovery: dict[tuple[str, str], asyncio.Task] = {}
 # ISRC → track duration enrichment (fire-and-forget)
 # ---------------------------------------------------------------------------
 
-# ISRCs for which MB returned no length — skip on repeat heartbeats.
+# ISRCs for which MB answered with no length — skip on repeat heartbeats.
+# An unreachable MB is not an answer and leaves the ISRC out of this set.
 _isrc_no_duration: set[str] = set()
 # In-flight duration tasks keyed on (release_id_or_mbid, position).
 _in_flight_isrc_dur: dict[tuple, asyncio.Task] = {}
