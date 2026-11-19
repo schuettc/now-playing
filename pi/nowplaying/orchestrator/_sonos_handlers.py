@@ -264,14 +264,13 @@ class SonosHandlersMixin:
 
     def _handle_capture_silent(self) -> None:
         """Sustained silence → arm idle timer that clears the kiosk.
-        Also clear any active prediction: sustained silent means side
-        flip or LP end, and predictions must not carry across — the next
-        audible on a new side needs a Shazam confirm before predictions
-        can resume.
+        The active prediction is kept: five seconds of quiet is as often
+        the gap between two tracks as a side flip, and the next audible
+        edge must advance from the predicted track, not from the last
+        confirmed one. The idle timer clears it when the quiet lasts.
         """
         state = self.state
         self._record_audible_edge_for_llm(state, "silent")
-        state.predicted_position = None
         if state.idle_task is not None and not state.idle_task.done():
             return
         state.idle_task = asyncio.create_task(

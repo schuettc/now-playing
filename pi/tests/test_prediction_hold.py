@@ -138,6 +138,25 @@ async def test_gap_advance_records_the_predicted_tracks_start_and_length():
     assert predicted["track_started_at"] is not None
 
 
+@pytest.mark.asyncio
+async def test_quiet_stretch_keeps_the_prediction_so_the_next_gap_advances_from_it():
+    """16:26:33: five seconds of quiet between tracks emitted `silent`, which
+    dropped the prediction; the next audible edge advanced from the last
+    confirmed track again. With A2 predicted, quiet then sound gives A3."""
+    state = _state_a1_confirmed()
+    _predict_a2(state, started_s_ago=240)
+    orch = _orch(state)
+    orch.bcast.publish = mock.AsyncMock(return_value=True)
+
+    with mock.patch(
+        "nowplaying.catalog.get_release", return_value=RELEASE,
+    ), mock.patch("nowplaying.history.record_play", new=mock.AsyncMock()):
+        orch._handle_capture_silent()
+        await orch._handle_capture_audible()
+
+    assert state.predicted_position["track_position"] == "A3"
+
+
 # Side B: B6 "Blank" (339 s) matched by fingerprint at 16:20:36, the gap
 # before B7 at 16:21:06, then clips of B7 saved as B6 at 348.1 s.
 
