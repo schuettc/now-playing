@@ -30,6 +30,7 @@ class State:  # skylos: ignore SKY-Q501 — State is intentionally the orchestra
         self.last_vinyl_confidence_set_at = None
         self.last_shazam_match_unix_ts = None
         self.last_shazam_match_offset_s = None
+        self.last_shazam_match_position = None
         self.last_unmatched_after_match_unix_ts = None
         self.last_pin_unix_ts = None
         self.pending_shazam_only.clear()
@@ -110,6 +111,9 @@ class State:  # skylos: ignore SKY-Q501 — State is intentionally the orchestra
         # The discovered-store seed drive adds the time since the match to
         # place a clip in the track.
         self.last_shazam_match_offset_s: float | None = None
+        # Track position that Shazam match confirmed; the offset above is
+        # only valid for this track.
+        self.last_shazam_match_position: str | None = None
         # Unix wall-clock timestamp of the FIRST heartbeat that returned
         # unmatched after the most recent Shazam-confirmed match. Marks
         # the boundary where the prior track stopped being recognized —

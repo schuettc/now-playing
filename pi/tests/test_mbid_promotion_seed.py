@@ -57,6 +57,7 @@ def orch(monkeypatch):
     o.state.last_vinyl = None
     o.state.last_shazam_match_unix_ts = None
     o.state.last_shazam_match_offset_s = None
+    o.state.last_shazam_match_position = "A1"
     o.state.sonos_source = "vinyl"
     return o
 
@@ -143,6 +144,22 @@ async def test_discogs_lock_never_takes_mbid_seed(orch, monkeypatch):
     orch.state.last_vinyl = lv
     orch.state.last_shazam_match_unix_ts = _WALL_NOW - 20
     orch.state.last_shazam_match_offset_s = 100.0
+    promote = _spy_promotion(monkeypatch)
+    await _schedule(orch)
+    promote.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_seed_declines_when_the_shown_track_is_not_the_confirmed_one(
+    orch, monkeypatch,
+):
+    """Shazam confirmed A1; a fingerprint publish has since moved the
+    display to A2. The offset belongs to A1, so it cannot place a clip
+    in A2."""
+    orch.state.last_vinyl = _discovered_last_vinyl(track_position="A2", duration=400)
+    orch.state.last_shazam_match_unix_ts = _WALL_NOW - 200
+    orch.state.last_shazam_match_offset_s = 30.0
+    orch.state.last_shazam_match_position = "A1"
     promote = _spy_promotion(monkeypatch)
     await _schedule(orch)
     promote.assert_not_called()

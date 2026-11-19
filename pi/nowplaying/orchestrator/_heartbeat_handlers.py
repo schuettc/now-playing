@@ -237,6 +237,7 @@ class HeartbeatHandlersMixin:
         # boundary, never a predicted-advance or fingerprint refresh.
         state.last_shazam_match_unix_ts = int(time.time())
         state.last_shazam_match_offset_s = result.get("track_position_s")
+        state.last_shazam_match_position = pos
         # Why: clearing the first-miss boundary here resets the gap so the
         # NEXT track's first miss restamps. See
         # docs/features/pin-position-ignores-predicted-advance-latency/.
@@ -730,8 +731,8 @@ class HeartbeatHandlersMixin:
 
         Declines unless last_vinyl is a genuinely off-Discogs release
         (release_id is None) carrying an mbid + track_position, a Shazam
-        confirm timestamp and match offset are set, and the matched
-        track's duration is known. The clip's position is the match offset
+        confirm timestamp and match offset are set for that same track,
+        and the track's duration is known. The clip's position is the match offset
         plus the time since the confirm; once that passes the end of the
         track the audio belongs to the next one, so the seed declines
         rather than file it under this track.
@@ -749,6 +750,8 @@ class HeartbeatHandlersMixin:
         offset_s = self.state.last_shazam_match_offset_s
         if not ts or offset_s is None:
             return None
+        if self.state.last_shazam_match_position != track_position:
+            return None  # the offset belongs to another track
         duration_s = _seed_track_duration(lv, track_position)
         if not duration_s:
             return None  # can't place the ref without a track length
