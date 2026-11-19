@@ -1,8 +1,8 @@
 # Now Playing — Architecture Reference
 
 A cheat-sheet of every mechanism in the pipeline. A **reference card**,
-not prose. Each entry is named, located by `file:line` for grep, and
-described in one sentence. When in doubt, follow the citation.
+not prose. Each entry is named, located by module and symbol name for
+grep, and described in one sentence. When in doubt, follow the citation.
 
 ## System map
 
@@ -11,8 +11,8 @@ flowchart TD
     Sonos["Sonos zone (UPnP listener)<br/>determines current source<br/>vinyl · airplay · streaming · radio · tv"]
     Capture["capture_proto.py<br/>15s heartbeats"]
     Recognize["recognize_proto.py"]
-    Orchestrator["main.py orchestrator<br/>state machine + lock +<br/>predicted advance +<br/>idle timer + history"]
-    API["api.py<br/>broadcaster + WS"]
+    Orchestrator["nowplaying/orchestrator/<br/>state machine + lock +<br/>predicted advance +<br/>idle timer + history"]
+    API["nowplaying/api/<br/>broadcaster + WS"]
     Kiosk["kiosk/ (React + Vite)"]
     UFO["UFO202 line-in"]
     MB["MusicBrainz lookup<br/>(ISRC → artist/album)"]
@@ -46,17 +46,17 @@ silent/audible IPC events drive orchestrator state transitions.
 
 | Mechanism | Location | One-liner |
 |---|---|---|
-| Silence floor | `capture_proto.py:84` | RMS below this is silence; heartbeats suppressed. Default `-15 dB`. Ambient line-in noise floor on UFO202+preamp sits around -17 dB; real music is -0.5 to -10 dB. -15 separates them with ~2 dB clearance above ambient and 5+ dB below the quietest expected music signal. |
-| Heartbeat cadence | `capture_proto.py:89` | Seconds between heartbeat clip writes. Default `15s`. Must match `HEARTBEAT_INTERVAL_S` in `main.py`. |
-| Silent timer | `capture_proto.py:91` | Sustained silence before emitting `silent` IPC. Default `5s`. |
-| Audible debounce | `capture_proto.py:93` | Suppress repeat `audible` events within this window unless a sustained `silent` fired in between. Default `30s`. Prevents Honey-Pie-style threshold flap from resetting per-side state. |
-| Rolling buffer | `capture_proto.py:100` | Duration of WAV clip written each heartbeat. Default `12s`. **Hard ceiling at 14s** — Shazam's backend silently returns empty matches at ≥15s ([shazamio Issue #150](https://github.com/dotX12/ShazamIO/issues/150)). 12s = 2s of safety pad. |
-| Resume-music threshold | `capture_proto.py:107` | After a silent period, force-emit first heartbeat as soon as level rises above this. Default `-28 dB`. Lands the post-silence clip at song-start instead of waiting for the cadence tick. |
-| Instant-clip delay | `capture_proto.py:46` | Seconds after silent→audible to flush a one-shot clip. Default `3s`. 12s buffer at that moment covers ~t=-9..+3 of the new song — enough for Shazam within 2–5s of needle drop. |
-| Fast-heartbeat window | `capture_proto.py:47` | Drop cadence to `--fast-heartbeat-s` for this duration after audible. Default `30s` with `--fast-heartbeat-s 5s`. Extra song-start shots for Shazam. |
-| Was-below-floor flag | `capture_proto.py:151` | Single-block-granularity dip detector. Any block below floor flips this true; the next above-floor block fires `audible` IPC. Catches fast side-flips that never accumulate to `--silent-s` of sustained silence. |
-| SIGHUP / SIGCONT | `capture_proto.py:183, 199` | Orchestrator pauses/resumes clip writes when Sonos source isn't vinyl/AirPlay-without-metadata. Audio stream + silent events keep running for instant resumption. |
-| SIGUSR1 / SIGUSR2 | `capture_proto.py:197, 207` | Runtime-mutable heartbeat cadence override. Used by the "anticipated track end" mechanism (currently visually suppressed). |
+| Silence floor | `capture_proto.py` — `--silence-db` | RMS below this is silence; heartbeats suppressed. Default `-34 dB` (`SILENCE_DB` in `nowplaying/vinyl/levels.py`, which the orchestrator passes explicitly). On the reference chain the idle noise floor sits around -41 dBFS and music around -20 dBFS. |
+| Heartbeat cadence | `capture_proto.py` — `--heartbeat-s` | Seconds between heartbeat clip writes. Default `15s`. Must match `HEARTBEAT_INTERVAL_S` in `nowplaying/orchestrator/streaming_idle.py`. |
+| Silent timer | `capture_proto.py` — `--silent-s` | Sustained silence before emitting `silent` IPC. Default `5s`. |
+| Audible debounce | `capture_proto.py` — `--audible-debounce-s` | Suppress repeat `audible` events within this window unless a sustained `silent` fired in between. Default `30s`. Prevents Honey-Pie-style threshold flap from resetting per-side state. |
+| Rolling buffer | `capture_proto.py` — `--buffer-s` | Duration of WAV clip written each heartbeat. Default `12s`. **Hard ceiling at 14s** — Shazam's backend silently returns empty matches at ≥15s ([shazamio Issue #150](https://github.com/dotX12/ShazamIO/issues/150)). 12s = 2s of safety pad. |
+| Resume-music threshold | `capture_proto.py` — `--resume-music-db` | After a silent period, force-emit first heartbeat as soon as level rises above this. Default `-30 dB` (`MUSIC_DB` in `nowplaying/vinyl/levels.py`); with the silence floor it forms a hysteresis band, so a level between the two keeps the gate's previous state. Lands the post-silence clip at song-start instead of waiting for the cadence tick. |
+| Instant-clip delay | `capture_proto.py` — `INSTANT_RECOGNIZE_DELAY_S` | Seconds after silent→audible to flush a one-shot clip. Default `3s`. 12s buffer at that moment covers ~t=-9..+3 of the new song — enough for Shazam within 2–5s of needle drop. |
+| Fast-heartbeat window | `capture_proto.py` — `INSTANT_FAST_HEARTBEAT_DURATION_S` | Drop cadence to `--fast-heartbeat-s` for this duration after audible. Default `30s` with `--fast-heartbeat-s 5s`. Extra song-start shots for Shazam. |
+| Was-below-floor flag | `capture_proto.py` — `was_below_floor` | Single-block-granularity dip detector. Any block below floor flips this true; the next above-floor block fires `audible` IPC. Catches fast side-flips that never accumulate to `--silent-s` of sustained silence. |
+| SIGHUP / SIGCONT | `capture_proto.py` — `handle_pause`, `handle_resume` | Orchestrator pauses/resumes clip writes when Sonos source isn't vinyl/AirPlay-without-metadata. Audio stream + silent events keep running for instant resumption. |
+| SIGUSR1 / SIGUSR2 | `capture_proto.py` — `handle_speedup`, `handle_revert` | Runtime-mutable heartbeat cadence override. Used by the "anticipated track end" mechanism (currently visually suppressed). |
 
 ## Recognition cascade — `pi/scripts/recognize_proto.py`
 
@@ -66,21 +66,23 @@ fallback for releases not in the user's Discogs collection.
 
 | Mechanism | Location | One-liner |
 |---|---|---|
-| Shazam tier | `recognize_proto.py:49–109` | ShazamIO call (~1–2s round-trip). Clip must be <14s. On hit: artist + title → `catalog.find_by_artist_title(preferred_release_id=...)`. |
-| `preferred_release_id` plumbing | `recognize_proto.py:52, 91` | Sticky lock. Orchestrator passes `state.last_vinyl["release_id"]`; catalog uses it for the +25 disambiguation bonus. |
-| Shazam-only payload enrichment | `recognize_proto.py:125–130` | When Discogs misses, propagate Shazam-derived `album`, `art_url`, and `albumadamid` onto the payload so the kiosk renders more than artist+title. |
-| `_attach_discovered_or_schedule` | `recognize_proto.py:149` | If `discovered.sqlite` already has a release for (artist, album), attach `release_mbid` + `tracklist` + resolved `track_position`/`side`; otherwise fire `_schedule_discovery` background task. |
-| `_resolve_track_position` | `recognize_proto.py:202` | Match Shazam track title against discovered tracklist (exact preferred, single-substring fallback). Fail-open on ambiguity. |
-| `_find_matching_track` | `recognize_proto.py:183` | Returns `(exact, fuzzy)` lists. Substring matches both directions (handles `"Tighten Up (Live)"` vs `"Tighten Up"`). |
-| `_schedule_discovery` | `recognize_proto.py:228` | Fire-and-forget MB lookup (ISRC first, then artist/album). Per-(artist, album) lock prevents duplicate in-flight requests across heartbeats. |
+| Shazam tier | `recognize_proto.py` — `recognize` | ShazamIO call (~1–2s round-trip). Clip must be <14s. On hit: artist + title → `catalog.find_by_artist_title(preferred_release_id=...)`. |
+| `preferred_release_id` plumbing | `recognize_proto.py` — `recognize(preferred_release_id=...)` | Sticky lock. Orchestrator passes `state.last_vinyl["release_id"]`; catalog uses it for the +25 disambiguation bonus. |
+| Shazam-only payload enrichment | `recognize_proto.py` — `recognize` | When Discogs misses, propagate Shazam-derived `album`, `art_url`, and `albumadamid` onto the payload so the kiosk renders more than artist+title. |
+| `_attach_discovered_or_schedule` | `recognize_proto.py` | If `discovered.sqlite` already has a release for (artist, album), attach `release_mbid` + `tracklist` + resolved `track_position`/`side`; otherwise fire `_schedule_discovery` background task. |
+| `_resolve_track_position` | `recognize_proto.py` | Match Shazam track title against discovered tracklist (exact preferred, single-substring fallback). Fail-open on ambiguity. |
+| `_find_matching_track` | `recognize_proto.py` | Returns `(exact, fuzzy)` lists. Substring matches both directions (handles `"Tighten Up (Live)"` vs `"Tighten Up"`). |
+| `_schedule_discovery` | `recognize_proto.py` | Fire-and-forget MB lookup (ISRC first, then artist/album). Per-(artist, album) lock prevents duplicate in-flight requests across heartbeats. |
 
-## Orchestrator state — `pi/nowplaying/main.py`
+## Orchestrator state — `pi/nowplaying/orchestrator/`
 
 The brain. State machine owning `last_vinyl` (the confirmed lock),
 `predicted_position` (tracklist-aware fallback), streak counters,
-idle timer, and shazam-only cross-heartbeat agreement.
+idle timer, and shazam-only cross-heartbeat agreement. The `Orchestrator`
+class (`orchestrator/_class.py`) is assembled from the mixins named below;
+`pi/nowplaying/main.py` is the entry point and re-exports the package.
 
-### State fields — `main.py:97`
+### State fields — `orchestrator/state.py` — `State`
 
 | Field | Purpose |
 |---|---|
@@ -98,18 +100,18 @@ idle timer, and shazam-only cross-heartbeat agreement.
 | `user_track_pin` | When the user manually picks a track via "Wrong Track" / `/identify`, the pinned identity is recorded here and **honored** in subsequent heartbeats until a release condition fires. Replaces the deleted album-lock mechanism that previously made manual picks stick. Shape: full payload identity (release_id, artist, album, title, track_position, side, art_url, duration_seconds, tracklist) plus `pinned_at_mono` for TTL. |
 | `pin_different_track_streak` | Consecutive Shazam hits on a different track within the pinned release. Reaches `PIN_DIFFERENT_TRACK_RELEASE_STREAK = 3` → pin released (the user moved past their pinned track). |
 
-### Key constants — `main.py:60–197`
+### Key constants — `orchestrator/streaming_idle.py`, `orchestrator/pin.py`, `vinyl/levels.py`
 
 | Constant | Value | Purpose |
 |---|---|---|
 | `NEEDS_ID_STREAK` | `2` | Music-level unmatched heartbeats before kiosk drops to NEEDS_ID. |
 | `MAX_UNMATCHED_STREAK` | `4` | Music-level unmatched heartbeats before treating as silence + arming idle. |
-| `SHAZAM_ONLY_MIN_LEVEL_DB` | `-12 dB` | "Music level" gate. Distinguishes real music (-1 to -10 dB) from threshold-edge ambient noise (-15 to -16 dB). 3 dB clearance above ambient, inclusive of quietest expected music intros. |
+| `MUSIC_DB` | `-30 dB` | "Music level" gate (`_is_music_level`). A heartbeat at or above it counts as music; music on the reference chain sits around -20 dBFS and the idle noise floor around -41 dBFS. |
 | `HEARTBEAT_INTERVAL_S` | `15` | Capture cadence (must match `--heartbeat-s` in capture). Used by streak-seeded prediction back-date math. |
 | `PIN_DIFFERENT_TRACK_RELEASE_STREAK` | `3` | Consecutive Shazam hits on a different position within the pinned release before the pin auto-releases. |
-| `PIN_TTL_BUFFER_S` | `15` | Pin TTL = `duration_seconds + PIN_TTL_BUFFER_S` (when duration known). Null duration → no TTL. |
+| `PIN_TTL_BUFFER_S` | `0` | Pin TTL = `duration_seconds + PIN_TTL_BUFFER_S` (when duration known). Null duration → no TTL. |
 
-### Recognition lead-time map — `main.py:171–183`
+### Recognition lead-time map — `orchestrator/streaming_idle.py` — `RECOGNITION_LEAD_S`
 
 ```python
 RECOGNITION_LEAD_S = {
@@ -121,11 +123,12 @@ RECOGNITION_LEAD_S = {
 ```
 
 Back-dates `track_started_at` so client elapsed-time clocks line up with
-audio. The streak-seeded predicted path (`main.py:469`) computes a custom
+audio. The streak-seeded predicted path (`_seed_prediction_from_last_vinyl`
+in `orchestrator/_prediction_unmatched.py`) computes a custom
 back-date of `NEEDS_ID_STREAK * 15 + 2 = 32s` because by the time the
 streak threshold trips, the song has actually been playing ~30s.
 
-### `on_heartbeat` branching — `main.py:286–680`
+### `on_heartbeat` branching — `orchestrator/_heartbeat_handlers.py` — `HeartbeatHandlersMixin.on_heartbeat`
 
 1. **Capture-pause guard**. Pause if source isn't vinyl or AirPlay-without-metadata.
 2. **Idle retraction**. Music-level heartbeat cancels in-flight idle task.
@@ -137,10 +140,10 @@ streak threshold trips, the song has actually been playing ~30s.
    - `streak > NEEDS_ID_STREAK` and no prediction → "still in NEEDS_ID, no republish."
    - Original NEEDS_ID publish (no lock or end-of-side): kiosk shows "couldn't identify."
    - Below-music-level + `last_vinyl` set: escalate to idle after `MAX_UNMATCHED_STREAK`.
-5. **User-track-pin honor path** — `main.py:657–680`. **Runs BEFORE the unconditional `state.last_vinyl = payload` overwrite.** When the user has pinned a track via `/identify`, every subsequent Shazam hit is evaluated against the pin via `_evaluate_user_pin`. Returns `("honor", ...)` → patch the outgoing payload with the pinned identity. Returns `("clear", ...)` → release pin and proceed normally. Returns `("pass", ...)` → no pin active, normal flow.
+5. **User-track-pin honor path** — `_apply_pin_decision` in `orchestrator/_prediction_shazam_gate.py`. **Runs BEFORE the unconditional `state.last_vinyl = payload` overwrite.** When the user has pinned a track via `/identify`, every subsequent Shazam hit is evaluated against the pin via `_evaluate_user_pin`. Returns `("honor", ...)` → patch the outgoing payload with the pinned identity. Returns `("clear", ...)` → release pin and proceed normally. Returns `("pass", ...)` → no pin active, normal flow.
 6. **Confirmed match**. Resets `unmatched_streak` and `predicted_position`. If `release_id is None` (Shazam hit, no Discogs match), gates on cross-heartbeat agreement.
 
-### `on_capture_state` handlers — `main.py:568–650`
+### `on_capture_state` handlers — `orchestrator/_sonos_handlers.py` — `_handle_capture_silent`, `_handle_capture_audible`
 
 | Event | Behaviour |
 |---|---|
@@ -148,18 +151,18 @@ streak threshold trips, the song has actually been playing ~30s.
 | `audible` (album-locked) | Cancel in-flight idle. Try to advance prediction (`_try_advance_prediction`). Publish predicted track. |
 | `audible` (no lock) | Cancel idle. Publish VinylIdentifying spinner. Reset `unmatched_streak = 0`. |
 
-### Prediction helpers — `main.py:109–246` (module-level)
+### Prediction helpers — `orchestrator/prediction.py` (pure) and `orchestrator/_prediction_advance.py` (methods)
 
 | Function | Purpose |
 |---|---|
 | `_advance_predicted_position(tracks, current)` | Pure: find current's index within its side; return next index or `None` at end-of-side. |
 | `_build_predicted_payload(last_vinyl, predicted, source)` | Pure-ish: look up track via `discogs_catalog.get_release`, merge album fields from `last_vinyl` + track fields from catalog, return payload with `match_method: "predicted"`, `predicted: True`. |
-| `_try_advance_prediction` (closure) | Orchestrator method: pick source position (existing prediction or seed from `last_vinyl`), advance, publish, record history. Accepts `track_started_at_override` for streak-seed back-dating. |
-| `_republish_current_prediction` (closure) | Re-emit current prediction without advancing. Used when streak persists past NEEDS_ID_STREAK. |
+| `_try_advance_prediction` (method) | Orchestrator method: pick source position (existing prediction or seed from `last_vinyl`), advance, publish, record history. Accepts `track_started_at_override` for streak-seed back-dating. |
+| `_republish_current_prediction` (method) | Re-emit current prediction without advancing. Used when streak persists past NEEDS_ID_STREAK. |
 
-### User-pin helper — `main.py:200–250`
+### User-pin helper — `orchestrator/pin.py` — `_evaluate_user_pin`
 
-`_evaluate_user_pin(pin, streak, rid, position, now_mono)` returns `("pass" | "honor" | "clear", new_streak, reason)`. Pure function — easy to unit-test (see `pi/tests/test_user_track_pin.py`, 18 cases). Release conditions in evaluation order:
+`_evaluate_user_pin(pin, streak, rid, position, now_mono)` returns `("pass" | "honor" | "clear", new_streak, reason)`. Pure function — easy to unit-test (see `pi/tests/test_user_track_pin.py`). Release conditions in evaluation order:
 
 1. **TTL expiry** — `pinned_at_mono + duration_seconds + PIN_TTL_BUFFER_S < now_mono`. Null duration → TTL skipped.
 2. **Different `release_id`** — Shazam hit on a different album entirely.
@@ -168,7 +171,7 @@ streak threshold trips, the song has actually been playing ~30s.
 
 Shazam-only hits (`release_id is None`) are honored unconditionally — that's exactly the case where the user's catalog pick is most authoritative.
 
-### Idle timer — `main.py:550`
+### Idle timer — `orchestrator/_prediction_shazam_gate.py` — `_idle_after_delay`
 
 120-second `asyncio.sleep` (`VINYL_IDLE_DELAY_S` in `orchestrator/streaming_idle.py`), cancellable. On fire: clear `last_vinyl`, `predicted_position`, `pending_shazam_only`, publish `STOPPED`.
 
@@ -179,7 +182,7 @@ After a restart with the needle up, the kiosk shows "identifying" until 120s of 
 When Shazam returns a track title, the catalog picks which release in
 the user's collection it belongs to.
 
-### `find_by_artist_title(artist, title, preferred_release_id=None)` — `catalog.py:289`
+### `find_by_artist_title(artist, title, preferred_release_id=None)` — `discogs/catalog.py`
 
 Public wrapper. Calls `_find_by_artist_title_primary` first; on `None`,
 falls back to **slash-split**: if the raw `title` contains ` / ` (medley
@@ -190,7 +193,7 @@ because the recursive call re-enters the same wrapper. Tie-break: higher
 `match_score` wins, first half wins on equal scores. Slash detection
 runs on raw title (not normalized — `_normalize` strips `/` to whitespace).
 
-### `_find_by_artist_title_primary` — `catalog.py:355`
+### `_find_by_artist_title_primary` — `discogs/catalog.py`
 
 Two-pass scoring. Pass 1: candidate filtering by similarity threshold.
 Pass 2: bias application + winner selection. Returns winner + up to 5
@@ -205,7 +208,7 @@ alternates.
 | Anthology side-deep | `+0` (filter) | Deep sides (E+) get filtered out of alternates list, not score-penalized. |
 | Year tie-breaker | — | Sort `(score, year)` descending. Most recent pressing wins ties. |
 
-### Side-first helpers — `catalog.py:56–96`
+### Side-first helpers — `discogs/catalog.py`
 
 | Function | Purpose |
 |---|---|
@@ -214,7 +217,7 @@ alternates.
 | `get_release(release_id)` | Returns release dict including `tracks` list. Tracks are `ORDER BY position` (lexicographic — display order in kiosk, not physical order). |
 | `rid_to_album(release_id)` | LRU(512). Returns `(artist, title)`. Used by art proxy. |
 
-### Alternates — `catalog.py:397`
+### Alternates — `discogs/catalog.py` — `_collect_alternates`
 
 Returns up to 5 distinct releases whose base-without-sticky score is
 within `ALTERNATE_DELTA = 20` of the winner. Sticky bonus is NOT
@@ -232,9 +235,9 @@ Discogs wins (canonical pressing).
 
 | Entrypoint | Location | Routing |
 |---|---|---|
-| `get_release(release_id=None, mbid=None)` | `catalog/__init__.py:23` | `release_id` set → `discogs_catalog.get_release`; else `mbid` → `_get_discovered_release` (queries `releases` + `tracks` ORDER BY rowid). |
-| `first_position_per_side(release_id=None, mbid=None)` | `catalog/__init__.py:40` | Either backend returns `{side: first-track-position}`. Discovered path queries `tracks` ORDER BY rowid; first row per side wins. |
-| `rid_to_album(release_id=None, mbid=None)` | `catalog/__init__.py:52` | Returns `(artist, title)` for either ID, or `None`. |
+| `get_release(release_id=None, mbid=None)` | `catalog/__init__.py` | `release_id` set → `discogs_catalog.get_release`; else `mbid` → `_get_discovered_release` (queries `releases` + `tracks` ORDER BY rowid). |
+| `first_position_per_side(release_id=None, mbid=None)` | `catalog/__init__.py` | Either backend returns `{side: first-track-position}`. Discovered path queries `tracks` ORDER BY rowid; first row per side wins. |
+| `rid_to_album(release_id=None, mbid=None)` | `catalog/__init__.py` | Returns `(artist, title)` for either ID, or `None`. |
 
 ## Discovery layer — `pi/nowplaying/discovery/`
 
@@ -259,24 +262,24 @@ Defined in `discovery/schema.py` (`DISCOVERED_DB_PATH`, `init_db`,
 
 | Function | Location | Purpose |
 |---|---|---|
-| `lookup_by_isrc` | `musicbrainz_lookup.py:134` | ISRC → release MBID via MB recording search → release pick. Strongest signal; tried first. |
-| `lookup_by_artist_album` | `musicbrainz_lookup.py:255` | Artist + album fallback. Track-count-aware MBID resolver (reused from `coverart.py`) to disambiguate when multiple releases share the title. Stamps `negative_lookups` on miss. |
-| `persist` | `musicbrainz_lookup.py:334` | Async wrapper around `_persist_sync`. Inserts release row + tracks + sets `normalized_album = normalize_album(title)`. |
-| `find_discovered_release_by_artist_album` | `musicbrainz_lookup.py:387` | Local DB lookup keyed on `LOWER(artist)` + `normalize_album(album)`. Returns MBID or `None`. No network. |
+| `lookup_by_isrc` | `musicbrainz_lookup.py` | ISRC → release MBID via MB recording search → release pick. Strongest signal; tried first. |
+| `lookup_by_artist_album` | `musicbrainz_lookup.py` | Artist + album fallback. Track-count-aware MBID resolver (reused from `coverart.py`) to disambiguate when multiple releases share the title. Stamps `negative_lookups` on miss. |
+| `persist` | `musicbrainz_lookup.py` | Async wrapper around `_persist_sync`. Inserts release row + tracks + sets `normalized_album = normalize_album(title)`. |
+| `find_discovered_release_by_artist_album` | `musicbrainz_lookup.py` | Local DB lookup keyed on `LOWER(artist)` + `normalize_album(album)`. Returns MBID or `None`. No network. |
 
 ### `discovery/_normalize.py`
 
 | Function | Location | One-liner |
 |---|---|---|
-| `normalize_album` | `_normalize.py:44` | Lower-cases + trims, then strips keyword-gated parenthesized edition markers (`"(Deluxe Edition)"`, `"(Remastered)"`, `"(Anniversary Edition)"`, etc.). Non-edition parens (`"Live at Leeds"`) are kept. |
-| `normalize_artist` | `_normalize.py:69` | Case + whitespace only — artist names are too varied for keyword stripping. |
+| `normalize_album` | `_normalize.py` | Lower-cases + trims, then strips keyword-gated parenthesized edition markers (`"(Deluxe Edition)"`, `"(Remastered)"`, `"(Anniversary Edition)"`, etc.). Non-edition parens (`"Live at Leeds"`) are kept. |
+| `normalize_artist` | `_normalize.py` | Case + whitespace only — artist names are too varied for keyword stripping. |
 
 ### Fingerprint cascade dispatcher — `pi/nowplaying/orchestrator/_heartbeat_handlers.py`
 
 | Mechanism | Location | One-liner |
 |---|---|---|
-| `_cascade_match_dispatch` | `_heartbeat_handlers.py:51` | Routes a fingerprint match by lock shape. `release_id` set → scoped scan of `fingerprint.db`. `release_mbid` set → scoped scan of `discovered.sqlite`. Both `None` (blind) → unioned scan across both stores, results merged + sorted by `Hit.hits` so the strongest cross-store hit wins. |
-| `Hit` NamedTuple | `vinyl/fingerprint.py:70` | Widened: `release_id: int | None`, `mbid: str | None`. Discogs hits set `release_id`; discovered hits set `mbid`. Exactly one is always populated. |
+| `_cascade_match_dispatch` | `_heartbeat_handlers.py` | Routes a fingerprint match by lock shape. `release_id` set → scoped scan of `fingerprint.db`. `release_mbid` set → scoped scan of `discovered.sqlite`. Both `None` (blind) → unioned scan across both stores, results merged + sorted by `Hit.hits` so the strongest cross-store hit wins. |
+| `Hit` NamedTuple | `vinyl/fingerprint.py` | Widened: `release_id: int | None`, `mbid: str | None`. Discogs hits set `release_id`; discovered hits set `mbid`. Exactly one is always populated. |
 
 ### `discovery/fingerprint.py`
 
@@ -286,15 +289,14 @@ the algorithm is identical across both stores.
 
 | Function | Location | Purpose |
 |---|---|---|
-| `add_ref(mbid, track_position, track_position_s, wav_bytes)` | `discovery/fingerprint.py:78` | Insert one fp_ref + its hashes for a discovered release. Idempotent via the `UNIQUE(mbid, track_position, track_position_s)` constraint. |
-| `match(wav_bytes, mbid_or_none)` | `discovery/fingerprint.py:178` | Scoped (`mbid` set) or blind (`None`) match. Returns `[Hit(...)]` sorted by `Hit.hits` descending. |
-| `delete_refs(ref_ids)` | `discovery/fingerprint.py:212` | Cascade-deletes hashes via FK. Used by hygiene. |
+| `add_ref(mbid, track_position, track_position_s, wav_bytes)` | `discovery/fingerprint.py` | Insert one fp_ref + its hashes for a discovered release. Idempotent via the `UNIQUE(mbid, track_position, track_position_s)` constraint. |
+| `match(wav_bytes, mbid_or_none)` | `discovery/fingerprint.py` | Scoped (`mbid` set) or blind (`None`) match. Returns `[Hit(...)]` sorted by `Hit.hits` descending. |
+| `delete_refs(ref_ids)` | `discovery/fingerprint.py` | Cascade-deletes hashes via FK. Used by hygiene. |
 
 ### Promotion routing — `orchestrator/_heartbeat_handlers.py:_schedule_coverage_promotion`
 
-`_schedule_coverage_promotion` (`_heartbeat_handlers.py:699`) routes
-MBID-anchor coverage gaps to `discovery.fingerprint.add_ref`
-(`_heartbeat_handlers.py:773–784`). MBID-keyed promotion bypasses the
+`_schedule_coverage_promotion` routes
+MBID-anchor coverage gaps to `discovery.fingerprint.add_ref`. MBID-keyed promotion bypasses the
 Discogs-cohort gates (cross-cohort guard + spacing/cap are `release_id`-keyed
 in `vinyl.promotion`); the `UNIQUE` constraint on
 `discovery.fingerprint.fp_refs` is the only gate against duplicate writes,
@@ -302,16 +304,16 @@ which is sufficient given today's anchor-only discovered-promotion flow
 (no user-pin on discovered releases yet). The `release_id` branch is
 unchanged.
 
-## History — `pi/nowplaying/history.py`
+## History — `pi/nowplaying/history/db.py`
 
 SQLite-backed play log. Coalesces same-track heartbeats into one row.
 
 | Mechanism | Location | Notes |
 |---|---|---|
-| `COALESCE_WINDOW_S` | `history.py:81` | `60s`. Heartbeats within this window of the previous row's `ended_at` extend it instead of inserting a new row. |
-| Row-match wildcard | `history.py:130–156` | Title is the strong key. release_id / artist / album / track_position match wildcardly (None → value enrichment doesn't split plays). |
-| Album session gap | `history.py:82` | `30 min`. Gap >30m between same-release rows starts a new session. |
-| Method upgrade | `history.py:201–224` | `CONFIRMED_METHODS = (shazam, sonos-*, user-*)` always overwrite predicted/unmatched in the UPDATE. Predicted entries become Shazam-confirmed when Shazam catches up. |
+| `COALESCE_WINDOW_S` | `history/db.py` | `60s`. Heartbeats within this window of the previous row's `ended_at` extend it instead of inserting a new row. |
+| Row-match wildcard | `history/db.py` — `_row_matches` | Title is the strong key. release_id / artist / album / track_position match wildcardly (None → value enrichment doesn't split plays). |
+| Album session gap | `history/db.py` — `ALBUM_SESSION_GAP_S` | `30 min`. Gap >30m between same-release rows starts a new session. |
+| Method upgrade | `history/db.py` — `_apply_coalesce_update` | `_CONFIRMED_METHODS = (shazam, sonos-*, user-*)` always overwrite predicted/unmatched in the UPDATE. Predicted entries become Shazam-confirmed when Shazam catches up. |
 
 ## Rate limit — `pi/nowplaying/vinyl/ratelimit.py`
 
@@ -326,14 +328,14 @@ cross-worker coordination; resets on restart.
 | Backoff | `1s` initial, cap `60s` | Exponential `2^(consecutive_failures-1)` for transient failures. |
 | 429 handling | Immediate trip | HTTP 429 from endpoint trips regardless of attempt count. |
 
-## Publish + WebSocket — `pi/nowplaying/api.py`
+## Publish + WebSocket — `pi/nowplaying/api/`
 
 | Mechanism | Location | One-liner |
 |---|---|---|
-| `_anchor_and_publish` | `main.py:288–322` | Sonos-supplied `track_started_at` adopted verbatim on track change; others back-dated via `RECOGNITION_LEAD_S[match_method]`. |
-| Broadcaster `_last` cache | `api.py:36, 52` | New WebSocket clients immediately get the most recent payload without waiting for the next publish. |
-| `/art/<release_id>` | `api.py:419` | Async art proxy. MusicBrainz CAA lookup if not cached. |
-| `/api/album-context` | `api.py:424` | Hint-gated MusicBrainz lookup for canonical artist + album resolution. |
+| `_anchor_and_publish` | `orchestrator/_publish_enrichment.py` | Sonos-supplied `track_started_at` adopted verbatim on track change; others back-dated via `RECOGNITION_LEAD_S[match_method]`. |
+| Broadcaster `_last` cache | `api/broadcaster.py` — `Broadcaster` | New WebSocket clients immediately get the most recent payload without waiting for the next publish. |
+| `/art/<release_id>` | `api/art.py` — `art_handler` | Async art proxy. MusicBrainz CAA lookup if not cached. |
+| `/api/album-context` | `api/snapshot.py` — `album_context_handler` | Hint-gated MusicBrainz lookup for canonical artist + album resolution. |
 
 ### NowPlaying payload — `pi/nowplaying/vinyl/runtime.py:to_now_playing_vinyl`
 
@@ -343,9 +345,9 @@ fields so the kiosk can render without a Discogs match:
 
 | Field | Source | Notes |
 |---|---|---|
-| `art_url` | `runtime.py:370–377` | Discogs path: `/art/<release_id>` proxy URL. Shazam-only path: wrapper-extracted Shazam art URL. |
-| `release_mbid` | `runtime.py:380–381` | Set when discovered.sqlite resolved the (artist, album). Drives the catalog dispatcher + MBID-keyed fingerprint scan. |
-| `albumadamid` | `runtime.py:382–383` | Shazam Apple Music album ID. Propagated for downstream enrichment / future Apple Music lookups. |
+| `art_url` | `to_now_playing_vinyl` | Discogs path: `/art/<release_id>` proxy URL. Shazam-only path: wrapper-extracted Shazam art URL. |
+| `release_mbid` | `to_now_playing_vinyl` | Set when discovered.sqlite resolved the (artist, album). Drives the catalog dispatcher + MBID-keyed fingerprint scan. |
+| `albumadamid` | `to_now_playing_vinyl` | Shazam Apple Music album ID. Propagated for downstream enrichment / future Apple Music lookups. |
 
 ## Kiosk UX — `kiosk/src/`
 
@@ -353,53 +355,56 @@ fields so the kiosk can render without a Discogs match:
 
 | Mechanism | Location | One-liner |
 |---|---|---|
-| Release-id-keyed art identity | `NowPlaying.tsx:21–29` | Art identity is `release_id` (shared across tracks on same album), so consecutive tracks don't refetch. |
-| Pre-warm image cache | `NowPlaying.tsx:61–69` | New `Image()` fires on release-id change to pre-fetch `/art/<id>` before AlbumArt mounts. |
-| Track identity split | `NowPlaying.tsx:37–41` | TrackInfo animates on every track change; AlbumArt stays mounted until release changes. |
-| Source-badge rules | `NowPlaying.tsx:145–156` | Color dot + method label. Hidden when idle. |
-| Predicted italic | `TrackInfo.tsx:27–29` | `data.predicted === true` → italic title at 85% opacity. No badge. |
-| Display-mode hierarchy | `NowPlaying.tsx:71–85` | Priority: idle → NEEDS_ID → AirPlay → VinylIdentifying → Track. |
+| Release-id-keyed art identity | `lib/art.ts` — `artIdentityOf` | Art identity is `release_id` (shared across tracks on same album), so consecutive tracks don't refetch. |
+| Pre-warm image cache | `hooks/useArtPrefetch.ts` | New `Image()` fires on release-id change to pre-fetch `/art/<id>` before AlbumArt mounts. |
+| Track identity split | `lib/art.ts` — `trackIdentityOf`; `components/now-playing/TrackLayout.tsx` | TrackInfo animates on every track change; AlbumArt stays mounted until release changes. |
+| Source-badge rules | `components/StatusPill.tsx` — `pillContent` | Color dot + method label. Hidden when idle. |
+| Predicted italic | `components/TrackInfo.tsx` — `buildTitleClass` | `data.predicted === true` → italic title at 85% opacity. No badge. |
+| Display-mode hierarchy | `hooks/useScreenState.ts` — `ScreenState` | Priority: idle → NEEDS_ID → AirPlay → VinylIdentifying → Track. |
 
 ### Album art
 
 | Mechanism | Location | One-liner |
 |---|---|---|
-| Double-layer fade | `AlbumArt.tsx:43–78` | Old layer demoted to `previous`, new layer hidden until `onLoad`. |
-| ONLOAD_TIMEOUT | `AlbumArt.tsx` | Force-visible at 2s if `onLoad` doesn't fire (don't hold stale art forever). |
-| 404 retry schedule | `AlbumArt.tsx:99–112` | `[5s, 15s, 30s]` backoffs with `?v=attempt` cache-bust query. MusicBrainz lookup is async. |
+| Double-layer fade | `components/useCrossfadePair.ts` | Old layer demoted to `previous`, new layer hidden until `onLoad`. |
+| ONLOAD_TIMEOUT | `components/useCrossfadePair.ts` — `ONLOAD_TIMEOUT_MS` | Force-visible at 2s if `onLoad` doesn't fire (don't hold stale art forever). |
+| 404 retry schedule | `components/CrossfadeLayer.tsx` — `RETRY_DELAYS_MS` | `[5s, 15s, 30s]` backoffs with `?v=attempt` cache-bust query. MusicBrainz lookup is async. |
 
 ### /identify search
 
+Served at `/lookup` (`routes/lookup/`); `/identify` redirects there. The
+search-and-pick logic lives in `features/identify/`.
+
 | Mechanism | Location | One-liner |
 |---|---|---|
-| Token-match autopilot | `Identify.tsx:79–118` | If query matches a track title, auto-expand the album and highlight the track. |
-| Autopilot guard | `Identify.tsx:91–104` | Skip autopilot if query matches an artist or album name — "Failure" shouldn't jump into ATUM. |
-| Hoist-expanded | `Identify.tsx:340–353` | When an album expands, move it to the top of its group so its tracklist isn't below alphabetical siblings. |
-| Scroll-into-view | `Identify.tsx:566–574` | Delay 260ms past Framer Motion transitions, then scroll the expanded card to top. |
-| Album-pick one-tap | `Identify.tsx:306–315` | `?scope=album` mode. Tapping any album auto-resolves the matched track and submits — no second pick. |
-| Track highlight (in-place) | `Identify.tsx:677–679` | Matched tracks render with amber border + position color. Stays in natural tracklist order (no reorder). |
-| Search clear button | `Identify.tsx:~408` | 44×44 round × button absolutely positioned inside the search input. Visible whenever the input has text. |
-| Debounce | `Identify.tsx:169–172` | `200ms` after last keystroke. Clears album-pick mode. |
-| ?scope=track\|album prefill | `Identify.tsx:178–231` | URL param prefills search. `scope=album` builds `<artist> <title>` and skips autopilot. |
+| Token-match autopilot | `searchMatch.ts` — `applyTokenMatch` | If query matches a track title, auto-expand the album and highlight the track. |
+| Autopilot guard | `searchMatch.ts` — `hasArtistOrAlbumMatch` | Skip autopilot if query matches an artist or album name — "Failure" shouldn't jump into ATUM. |
+| Hoist-expanded | `gridCellsHelpers.ts` — `hoistExpanded` | When an album expands, move it to the top of its group so its tracklist isn't below alphabetical siblings. |
+| Scroll-into-view | `useAlbumCardScroll.ts` — `SCROLL_DELAY_MS` | Delay 260ms past Framer Motion transitions, then scroll the expanded card to top. |
+| Album-pick one-tap | `identifyActionHelpers.ts` — `findTrackInRelease` | `?scope=album` mode. Tapping any album auto-resolves the matched track and submits — no second pick. |
+| Track highlight (in-place) | `TrackPickButton.tsx` | Matched tracks render with amber border + position color. Stays in natural tracklist order (no reorder). |
+| Search clear button | `components/touch/SearchField.tsx` | 44×44 round × button absolutely positioned inside the search input. Visible whenever the input has text. |
+| Debounce | `useIdentifyQuery.ts` — `DEBOUNCE_MS` | `200ms` after last keystroke. Clears album-pick mode. |
+| ?scope=track\|album prefill | `useIdentifyScope.ts`; `identifyScopeHelpers.ts` — `computeSeed` | URL param prefills search. `scope=album` builds `<artist> <title>` and skips autopilot. |
 
 ### NEEDS_ID
 
 | Mechanism | Location | One-liner |
 |---|---|---|
-| Simplified clip-less state | `NeedsIdScreen.tsx` | No clip queue. Shows previous-track context + "Help identify this song" link to `/identify`. |
+| Simplified clip-less state | `components/now-playing/ScreenOverlay.tsx`; `components/VinylIdentifying.tsx` | No clip queue. Shows the "Help identify this song" link to `/identify`. |
 
 ### WebSocket + state
 
 | Mechanism | Location | One-liner |
 |---|---|---|
-| Exponential reconnect | `useNowPlaying.ts:48–52` | `1s * 2^attempt`, cap 15s. Resets on successful open. |
-| Cancellation token | `useNowPlaying.ts:36, 69–73` | Avoids setState on unmounted hook. |
+| Exponential reconnect | `hooks/useNowPlaying.ts` — `RECONNECT_BASE_MS`, `RECONNECT_MAX_MS` | `1s * 2^attempt`, cap 15s. Resets on successful open. |
+| Cancellation token | `hooks/useNowPlaying.ts` — `cancelled` | Avoids setState on unmounted hook. |
 
 ### Tracklist panel
 
 | Mechanism | Location | One-liner |
 |---|---|---|
-| `layoutId` highlight | `TracklistPanel.tsx:55–61` | Framer Motion shared-layout animation smoothly slides the current-track highlight between tracks on the same side. |
+| `layoutId` highlight | `components/TracklistPanel.tsx` | Framer Motion shared-layout animation smoothly slides the current-track highlight between tracks on the same side. |
 
 ## Glossary
 
@@ -409,7 +414,7 @@ fields so the kiosk can render without a Discogs match:
 - **Sticky release** — the disambiguation bonus that prefers the currently-locked album. +25 in `find_by_artist_title`.
 - **Sustained silent** — `silent` IPC event fired after `--silent-s` (default 5s) of continuous below-floor audio. Clears predicted state and arms idle timer.
 - **Audible flap** — quiet-passage audio that oscillates across the silence floor. Debounced via `--audible-debounce-s` (default 30s) so it doesn't repeatedly reset per-side state.
-- **Music level** — audio at `≥ SHAZAM_ONLY_MIN_LEVEL_DB` (-12 dB). Three call sites gate behaviour on this; consider `_is_music_level` helper.
+- **Music level** — audio at `≥ MUSIC_DB` (-30 dB, `nowplaying/vinyl/levels.py`), tested by `_is_music_level` in `orchestrator/streaming_idle.py`.
 - **Side-first** — the first physical track on a side of vinyl. Worth +15 in scoring because users start records from the beginning. Rowid-aware — both "D1" (per-side) and "D15" (cumulative) numbering work.
 
 ## File index
@@ -418,10 +423,12 @@ fields so the kiosk can render without a Discogs match:
 |---|---|
 | `pi/scripts/capture_proto.py` | Capture loop |
 | `pi/scripts/recognize_proto.py` | Per-clip recognizer cascade |
-| `pi/nowplaying/main.py` | Orchestrator state machine |
-| `pi/nowplaying/api.py` | aiohttp app + WebSocket broadcaster |
-| `pi/nowplaying/control.py` | `/control/{mark-wrong,select-release,next-track}` + `/api/identify` + `/api/collection/search`. Owns user-track-pin writes + lifecycle clears. |
-| `pi/nowplaying/history.py` | SQLite play log |
+| `pi/nowplaying/main.py` | Entry point; re-exports `nowplaying.orchestrator` |
+| `pi/nowplaying/orchestrator/` | Orchestrator state machine (`State`, heartbeat / Sonos / prediction / publish mixins) |
+| `pi/nowplaying/vinyl/levels.py` | `SILENCE_DB` / `MUSIC_DB` audio-level thresholds |
+| `pi/nowplaying/api/` | aiohttp app + WebSocket broadcaster |
+| `pi/nowplaying/control/` | `/control/{mark-wrong,select-release,next-track}` + `/api/identify` + `/api/collection/search`. Owns user-track-pin writes + lifecycle clears. |
+| `pi/nowplaying/history/` | SQLite play log |
 | `pi/nowplaying/discogs/catalog.py` | Local Discogs collection queries + disambiguation scoring |
 | `pi/nowplaying/catalog/__init__.py` | Dispatcher: routes `release_id` vs `mbid` to Discogs or discovered store |
 | `pi/nowplaying/discovery/schema.py` | `discovered.sqlite` schema + connection helpers |
@@ -434,23 +441,25 @@ fields so the kiosk can render without a Discogs match:
 | `pi/nowplaying/vinyl/shazam.py` | shazamio wrapper |
 | `pi/nowplaying/vinyl/hygiene.py` | Clip retention (orphan cleanup) |
 | `pi/nowplaying/vinyl/runtime.py` | Capture subprocess management |
-| `kiosk/src/routes/Identify.tsx` | Search-and-pick page |
-| `kiosk/src/components/NowPlaying.tsx` | Main display routing |
+| `kiosk/src/routes/lookup/` | Search-and-pick page (`/lookup`) |
+| `kiosk/src/features/identify/` | Search, scope prefill, result grid and track-pick logic behind it |
+| `kiosk/src/components/NowPlaying.tsx` | Top-level view; renders `now-playing/NowPlayingView.tsx` |
+| `kiosk/src/hooks/useScreenState.ts` | Main display routing |
 | `kiosk/src/components/TrackInfo.tsx` | Title/artist/album rendering |
-| `kiosk/src/components/AlbumArt.tsx` | Double-layer fade + retry |
-| `kiosk/src/components/NeedsIdScreen.tsx` | "Couldn't identify" state |
+| `kiosk/src/components/AlbumArt.tsx` | Double-layer fade + retry (`useCrossfadePair.ts`, `CrossfadeLayer.tsx`) |
+| `kiosk/src/components/now-playing/ScreenOverlay.tsx` | "Couldn't identify" state |
 | `kiosk/src/hooks/useNowPlaying.ts` | WebSocket subscription |
 
 ## Where to look first when something breaks
 
 | Symptom | Start here |
 |---|---|
-| "Kiosk shows wrong album" | `catalog.py:find_by_artist_title` scoring breakdown + alternates list |
-| "Kiosk dropped to clock during a song" | `capture_proto.py` silent/audible events + `main.py` idle timer |
+| "Kiosk shows wrong album" | `discogs/catalog.py` `find_by_artist_title` scoring breakdown + alternates list |
+| "Kiosk dropped to clock during a song" | `capture_proto.py` silent/audible events + `_idle_after_delay` idle timer |
 | "Quiet song flapping" | `capture_proto.py` silence floor + audible debounce |
 | "Shazam silently missing on long clips" | `--buffer-s` value; must be <14s |
-| "Predicted tracks not showing" | `main.py` `predicted_position` lifecycle; `last_vinyl.track_position` must be set |
+| "Predicted tracks not showing" | `orchestrator/_prediction_advance.py` `predicted_position` lifecycle; `last_vinyl.track_position` must be set |
 | "Clip not in Shazam catalog (segues etc.)" | Expected. Tracklist advancement handles it if locked. |
-| "Wrong-album one-tap not working" | `Identify.tsx` `albumPickTrackTitle` state + `findTrackInRelease` |
-| "I picked the right track, kiosk flipped back to wrong one" | `main.py` `_evaluate_user_pin` — pin should be honored. Check `state.user_track_pin` log lines + `pin_different_track_streak`. |
+| "Wrong-album one-tap not working" | `features/identify/identifyActionHelpers.ts` `albumPickTrackTitle` + `findTrackInRelease` |
+| "I picked the right track, kiosk flipped back to wrong one" | `orchestrator/pin.py` `_evaluate_user_pin` — pin should be honored. Check `state.user_track_pin` log lines + `pin_different_track_streak`. |
 | "Shazam returned medley title (`A / B`), kiosk fell back to shazam-only" | `catalog.find_by_artist_title` slash-split fallback. Confirm both halves were tried (DEBUG log). |
