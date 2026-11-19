@@ -28,7 +28,7 @@ ssh nowplaying-pi 'cd ~/now-playing/pi && curl -LsSf https://astral.sh/uv/instal
 That installs `uv` to `~/.local/bin/uv`. Then:
 
 ```bash
-ssh nowplaying-pi 'cd ~/now-playing/pi && ~/.local/bin/uv sync --extra audio --extra discogs --extra shazam'
+ssh nowplaying-pi 'cd ~/now-playing/pi && ~/.local/bin/uv sync --locked --extra audio --extra discogs --extra shazam'
 ```
 
 This creates `pi/.venv/` and installs the three required extra groups:

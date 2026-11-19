@@ -75,7 +75,7 @@ For experienced installers:
 git clone <repo-url> ~/now-playing
 cd ~/now-playing/pi
 curl -LsSf https://astral.sh/uv/install.sh | sh && exec $SHELL
-uv sync --extra audio --extra discogs --extra shazam
+uv sync --locked --extra audio --extra discogs --extra shazam
 # create .env (in this directory) with DISCOGS_TOKEN and SONOS_ZONE_NAME, then:
 uv run python scripts/discogs_sync.py
 cd ~/now-playing && sudo bash pi/systemd/install.sh

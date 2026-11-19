@@ -64,7 +64,7 @@ git clone <repo-url> ~/now-playing
 cd ~/now-playing/pi
 curl -LsSf https://astral.sh/uv/install.sh | sh
 exec $SHELL    # pick up uv on PATH
-uv sync --extra audio --extra discogs --extra shazam
+uv sync --locked --extra audio --extra discogs --extra shazam
 ```
 
 **Verify:** `uv run python -c "import sounddevice; print('ok')"` prints `ok` (from `~/now-playing/pi`).
@@ -335,7 +335,7 @@ When Shazam misses on a record you've already played a few times, the orchestrat
 
    ```bash
    cd ~/now-playing/pi
-   uv sync --extra audio --extra discogs --extra shazam --extra fingerprint
+   uv sync --locked --extra audio --extra discogs --extra shazam --extra fingerprint
    sudo systemctl restart nowplaying-orchestrator
    ```
 

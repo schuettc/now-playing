@@ -95,7 +95,7 @@ FINGERPRINT_ENABLED=true
 Then re-install the optional extra and restart:
 
 ```bash
-ssh nowplaying-pi 'cd ~/now-playing/pi && ~/.local/bin/uv sync --extra audio --extra discogs --extra shazam --extra fingerprint && sudo systemctl restart nowplaying-orchestrator'
+ssh nowplaying-pi 'cd ~/now-playing/pi && ~/.local/bin/uv sync --locked --extra audio --extra discogs --extra shazam --extra fingerprint && sudo systemctl restart nowplaying-orchestrator'
 ```
 
 Confirm the cascade picked it up:

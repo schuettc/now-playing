@@ -1,0 +1,74 @@
+name: Tests
+
+"on":
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pi
+    env:
+      UV_PYTHON: '3.13'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      # No apt packages: the tests never import sounddevice (the only module
+      # that needs the system PortAudio library), and the soundfile wheel
+      # bundles libsndfile.
+      - name: Install dependencies from the lockfile
+        run: uv sync --locked --all-extras
+
+      - name: Run pytest
+        run: uv run pytest tests -q
+
+  kiosk:
+    name: Kiosk (typecheck + vitest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: kiosk
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: kiosk/pnpm-lock.yaml
+
+      - name: Install dependencies from the lockfile
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Run vitest
+        run: pnpm test
