@@ -43,12 +43,12 @@ function formatLastLabel(
 export function StatsCaption() {
   const rid = useStore((s) => s.payload?.release_id);
   const stats = useStore((s) =>
-    rid !== undefined ? s.albumStats.get(rid) ?? null : null,
+    rid != null ? s.albumStats.get(rid) ?? null : null,
   );
   const fetchAlbumStats = useStore((s) => s.fetchAlbumStats);
 
   useEffect(() => {
-    if (rid === undefined) return;
+    if (rid == null) return;
     fetchAlbumStats(rid);
   }, [rid, fetchAlbumStats]);
 
@@ -56,7 +56,7 @@ export function StatsCaption() {
 
   const playLabel = formatPlayCount(stats.play_count);
   const lastLabel = formatLastLabel(
-    rid,
+    rid ?? undefined,
     stats.last_played_at,
     stats.release_id,
     Date.now() / 1000,

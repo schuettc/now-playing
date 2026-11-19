@@ -17,7 +17,7 @@ interface Props {
   effectiveArtUrl: string | undefined;
   artCacheBust: number;
   isPaused: boolean;
-  /** When set, the left column shows the guess card instead of TrackInfo. */
+  /** When set, the left column shows the guess card under TrackInfo. */
   guess?: Guess | null;
 }
 
@@ -67,7 +67,7 @@ export function TrackLayout({
         <div className="relative">
           <AlbumArt
             src={bustedUrl}
-            alt={data.album ?? data.title}
+            alt={data.album ?? data.title ?? undefined}
             identity={`${artId}#${artCacheBust}`}
             dim={isPaused}
           />

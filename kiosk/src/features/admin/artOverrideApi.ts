@@ -14,10 +14,10 @@ export interface ArtTarget extends Ids {
 
 export function artTargetOf(data: NowPlaying): ArtTarget {
   return {
-    releaseId: data.release_id,
-    artist: data.artist,
-    album: data.album,
-    currentArtUrl: data.art_url,
+    releaseId: data.release_id ?? undefined,
+    artist: data.artist ?? undefined,
+    album: data.album ?? undefined,
+    currentArtUrl: data.art_url ?? undefined,
   };
 }
 

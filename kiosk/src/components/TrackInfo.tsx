@@ -17,7 +17,7 @@ function buildTitleClass(predicted: boolean | undefined): string {
   return `${TITLE_BASE} ${predicted ? 'italic text-white/85' : 'text-white'}`;
 }
 
-function AlbumYearLine({ album, year }: { album: string | undefined; year: string | number | undefined }) {
+function AlbumYearLine({ album, year }: { album: string | null | undefined; year: number | null | undefined }) {
   if (!album) return <div className="min-h-[1.75rem] text-xl text-white/60" />;
   return (
     <div className="min-h-[1.75rem] text-xl text-white/60">

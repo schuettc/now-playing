@@ -109,7 +109,7 @@ interface KioskStore {
 
   fetchAlbumStats: (releaseId: number) => Promise<void>;
   fetchAlbumContext: (
-    args: { releaseId?: number; artist?: string; album?: string },
+    args: { releaseId?: number | null; artist?: string | null; album?: string | null },
   ) => Promise<void>;
 
   // ── Identify route state ──────────────────────────────────────────────
@@ -168,7 +168,7 @@ const initialState = {
 
 function recognitionIdentity(p: NowPlaying | null): string | null {
   if (!p) return null;
-  if (p.title === undefined && p.release_id === undefined) return null;
+  if (p.title == null && p.release_id == null) return null;
   return `${p.release_id ?? 'r'}::${p.track_position ?? 't'}::${p.title ?? '-'}`;
 }
 
@@ -176,11 +176,11 @@ function recognitionIdentity(p: NowPlaying | null): string | null {
 // AirPlay uses (artist, album) which the backend hashes via artcache.key_for so
 // the Wikipedia cache file lands in the same dir as the vinyl entries.
 export function albumContextKey(args: {
-  releaseId?: number;
-  artist?: string;
-  album?: string;
+  releaseId?: number | null;
+  artist?: string | null;
+  album?: string | null;
 }): string | null {
-  if (args.releaseId !== undefined) return `rid:${args.releaseId}`;
+  if (args.releaseId != null) return `rid:${args.releaseId}`;
   if (args.artist && args.album) return `name:${args.artist}|${args.album}`;
   return null;
 }
@@ -208,11 +208,7 @@ const fetchActions = (set: Setter, get: Getter) => ({
       get,
     });
   },
-  fetchAlbumContext: async (args: {
-    releaseId?: number;
-    artist?: string;
-    album?: string;
-  }) => {
+  fetchAlbumContext: async (args: { releaseId?: number | null; artist?: string | null; album?: string | null }) => {
     const key = albumContextKey(args);
     if (!key) return;
     const { albumContext, _inflightContext } = get();
@@ -222,7 +218,7 @@ const fetchActions = (set: Setter, get: Getter) => ({
       inflight: _inflightContext,
       fetch: async () => {
         const params = new URLSearchParams();
-        if (args.releaseId !== undefined) params.set('release_id', String(args.releaseId));
+        if (args.releaseId != null) params.set('release_id', String(args.releaseId));
         if (args.artist) params.set('artist', args.artist);
         if (args.album) params.set('album', args.album);
         return (await fetchJson(`/api/album-context?${params.toString()}`)) as AlbumContext | null;

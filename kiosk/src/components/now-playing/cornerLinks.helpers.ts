@@ -14,9 +14,9 @@ export interface CornerLinksView {
 /**
  * Derives the surviving CornerLinks data (Discogs link only).
  *
- * The previous `↺ Wrong track? / Wrong album?` cluster was retired
- * by `identify-learning-chip-undo-strip` — `UndoStrip` is now the
- * single "wrong track" affordance, anchored under the StatusPill.
+ * The `↺ Wrong track? / Wrong album?` cluster that used to live here
+ * is gone; those corrections are reached through the "Something wrong?"
+ * picker.
  * Wikipedia link is rendered by `WikipediaLink` directly using its
  * own store-backed lookup.
  */
@@ -24,7 +24,7 @@ export function buildCornerLinks(input: CornerLinksInput): CornerLinksView {
   const { data, showTrack } = input;
   const releaseId = data?.release_id;
   const lockedReleaseId =
-    showTrack && releaseId !== undefined ? releaseId : null;
+    showTrack && releaseId != null ? releaseId : null;
   return {
     discogsReleaseId: lockedReleaseId,
   };

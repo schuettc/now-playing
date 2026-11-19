@@ -60,11 +60,11 @@ export function buildSomethingWrongRows(
   const hasTracklist =
     isVinyl &&
     (data.tracklist?.length ?? 0) > 1 &&
-    data.release_id !== undefined;
+    data.release_id != null;
   const hasAlternates =
     isVinyl && (data.alternate_releases?.length ?? 0) > 0;
   const hasArtTarget =
-    canChangeArt && (data.release_id !== undefined || Boolean(data.album));
+    canChangeArt && (data.release_id != null || Boolean(data.album));
 
   if (hasTracklist) {
     out.push({ kind: 'wrong-track', ...TEMPLATES['wrong-track'] });

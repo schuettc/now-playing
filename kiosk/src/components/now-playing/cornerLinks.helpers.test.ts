@@ -55,3 +55,15 @@ describe('buildCornerLinks', () => {
     expect(v.discogsReleaseId).toBeNull();
   });
 });
+
+describe('buildCornerLinks with a null release_id', () => {
+  it('shows no Discogs link', () => {
+    const v = buildCornerLinks({
+      data: np({ release_id: null }),
+      showTrack: true,
+      showNeedsId: false,
+      showVinylIdentifying: false,
+    });
+    expect(v.discogsReleaseId).toBeNull();
+  });
+});

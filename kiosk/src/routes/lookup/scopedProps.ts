@@ -28,7 +28,7 @@ function positionFieldsFromPayload(
 ): ScopedPositionFields {
   const releaseMatches = p.release_id === releaseId;
   return {
-    payloadReleaseId: p.release_id,
+    payloadReleaseId: p.release_id ?? undefined,
     currentPosition: positionIfMatch(p.track_position, releaseMatches),
     guessPosition: positionIfMatch(p.guess?.position, releaseMatches),
   };

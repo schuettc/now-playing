@@ -194,7 +194,7 @@ export function SomethingWrongPicker({
   };
 
   const handleClearConfirm = async () => {
-    if (data.release_id === undefined || !data.track_position) {
+    if (data.release_id == null || !data.track_position) {
       setConfirmingClear(false);
       return;
     }

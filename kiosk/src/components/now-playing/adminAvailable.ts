@@ -11,7 +11,7 @@ export function computeAdminAvailable(data: NowPlaying | null): boolean {
   return Boolean(
     data &&
       data.title &&
-      (data.release_id !== undefined ||
+      (data.release_id != null ||
         data.album ||
         data.source === 'vinyl'),
   );

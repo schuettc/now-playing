@@ -43,7 +43,7 @@ export function usePrepareNowPlayingProps() {
 
   const { effectiveArtUrl, artCacheBust, onSaved } = useArtOverride({
     trackId,
-    artUrl: data?.art_url,
+    artUrl: data?.art_url ?? undefined,
   });
   const { isTrack, isPaused } = trackFlags(screen);
 

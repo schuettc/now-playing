@@ -99,7 +99,7 @@ export function useGuessConfirmHandlers(
     return () => clearTimeout(t);
   }, [lifetimeMs, variant]);
 
-  const currentReleaseId = (): number | undefined =>
+  const currentReleaseId = (): number | null | undefined =>
     useStore.getState().payload?.release_id;
 
   const onConfirm = () => {
