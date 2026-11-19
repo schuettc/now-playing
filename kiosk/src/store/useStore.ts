@@ -5,34 +5,41 @@ import type { AlbumStats, NowPlaying } from '@/types';
  * Shared get/set/inflight pattern used by both `fetchAlbumStats` and
  * `fetchAlbumContext`: deduplicate concurrent callers, run the fetch,
  * and commit a *new* Map to the store so Zustand's shallow equality
- * fires for selectors. Failed fetches still cache `null` so panels
- * don't spin forever on a flaky endpoint.
+ * fires for selectors. A fetch that throws commits nothing, so the next
+ * caller tries again and any earlier value stays. With `refresh`, a
+ * cached key is fetched again instead of being served from the cache.
  */
 async function cachedFetch<K, V>(args: {
   key: K;
   cache: Map<K, V | null>;
   inflight: Set<K>;
+  refresh?: boolean;
   fetch: () => Promise<V | null>;
   commit: (next: Map<K, V | null>) => void;
   getCache: (s: KioskStore) => Map<K, V | null>;
   get: () => KioskStore;
 }): Promise<void> {
-  const { key, cache, inflight, fetch, commit, getCache, get } = args;
-  if (cache.has(key) || inflight.has(key)) return;
+  const { key, cache, inflight, refresh = false, fetch, commit, getCache, get } = args;
+  if (inflight.has(key)) return;
+  if (cache.has(key) && !refresh) return;
   inflight.add(key);
   try {
-    let value: V | null = null;
-    try {
-      value = await fetch();
-    } catch {
-      value = null;
-    }
+    const value = await fetch();
     const next = new Map(getCache(get()));
     next.set(key, value);
     commit(next);
+  } catch {
+    // Not cached: the next caller retries.
   } finally {
     inflight.delete(key);
   }
+}
+
+/** GET a JSON body; throws on a network error, an error status or a non-JSON body. */
+async function fetchJson(url: string): Promise<unknown> {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
+  return r.json();
 }
 
 /**
@@ -185,14 +192,16 @@ const fetchActions = (set: Setter, get: Getter) => ({
       key: releaseId,
       cache: albumStats,
       inflight: _inflightStats,
+      // Play counts change while the page stays loaded, so every call
+      // refetches; the cached value is shown until the new one lands.
+      refresh: true,
       fetch: async () => {
-        const r = await fetch(`/api/album-stats?release_id=${releaseId}`);
-        if (!r.ok) return null;
-        const body = await r.json().catch(() => null);
-        if (body && body.ok === true) {
-          return (body.stats as AlbumStats | null) ?? null;
-        }
-        return null;
+        const body = (await fetchJson(`/api/album-stats?release_id=${releaseId}`)) as {
+          ok?: boolean;
+          stats?: AlbumStats | null;
+        } | null;
+        if (body?.ok !== true) throw new Error('album-stats: not ok');
+        return body.stats ?? null;
       },
       commit: (next) => set({ albumStats: next }),
       getCache: (s) => s.albumStats,
@@ -216,9 +225,7 @@ const fetchActions = (set: Setter, get: Getter) => ({
         if (args.releaseId !== undefined) params.set('release_id', String(args.releaseId));
         if (args.artist) params.set('artist', args.artist);
         if (args.album) params.set('album', args.album);
-        const r = await fetch(`/api/album-context?${params.toString()}`);
-        if (!r.ok) return null;
-        return (await r.json().catch(() => null)) as AlbumContext | null;
+        return (await fetchJson(`/api/album-context?${params.toString()}`)) as AlbumContext | null;
       },
       commit: (next) => set({ albumContext: next }),
       getCache: (s) => s.albumContext,
