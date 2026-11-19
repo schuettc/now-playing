@@ -18,6 +18,34 @@ class State:  # skylos: ignore SKY-Q501 — State is intentionally the orchestra
         self._init_guess()
         self._init_llm_context()
 
+    def reset_vinyl_session(self) -> None:
+        """Forget everything recognised, pinned or predicted about what is
+        playing: the lock, its stamps, the pin and anchor, the prediction
+        and the rolling recognition context. The one place that ends a
+        session, so a source change or an idle cannot leave part of it
+        behind for the next source. Leaves the Sonos transport fields, the
+        idle task and the sticky-idle fields to their own handlers.
+        """
+        self.last_vinyl = None
+        self.last_vinyl_confidence_set_at = None
+        self.last_shazam_match_unix_ts = None
+        self.last_unmatched_after_match_unix_ts = None
+        self.last_pin_unix_ts = None
+        self.pending_shazam_only.clear()
+        self.unmatched_streak = 0
+        self.user_track_pin = None
+        self.pin_different_track_streak = 0
+        self.fingerprint_anchor = None
+        self.recent_fp_hits.clear()
+        self.predicted_position = None
+        self.pending_guess = None
+        self.dismissed_guesses.clear()
+        self.last_shazam_gated = None
+        self.recent_audible_edges.clear()
+        self.audible_up_at_mono = None
+        self.tracks_seen_since_audible_edge.clear()
+        self.recent_heartbeat_levels.clear()
+
     def _init_sonos(self) -> None:
         self.sonos_source: str = "unknown"
         self.sonos_state: str = "STOPPED"

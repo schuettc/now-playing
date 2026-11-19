@@ -119,8 +119,8 @@ class SonosHandlersMixin:
 
     def _apply_source_transition(self, ev: dict, payload: dict) -> None:
         """Update state.sonos_source/state/has_metadata from the incoming
-        event, and on any source change clear cross-heartbeat agreement
-        and cancel any in-flight idle from the previous source.
+        event, and on any source change end the previous source's session
+        (lock, pin, anchor, prediction) and cancel its in-flight idle.
         """
         state = self.state
         previous_source = state.sonos_source
@@ -129,10 +129,12 @@ class SonosHandlersMixin:
         state.sonos_has_metadata = bool(payload.get("title"))
         if previous_source == state.sonos_source:
             return
-        state.pending_shazam_only.clear()
-        # Clear any stale track-guess so it can't be attached to the first
-        # publish after the source flip (e.g., vinyl guess leaked into AirPlay).
-        state.pending_guess = None
+        if state.user_track_pin is not None:
+            log.info(
+                "pin released: reason=source_change %s -> %s",
+                previous_source, state.sonos_source,
+            )
+        state.reset_vinyl_session()
         if state.idle_task is not None and not state.idle_task.done():
             log.info(
                 "idle retracted: source change %s -> %s",
@@ -190,29 +192,16 @@ class SonosHandlersMixin:
         return payload
 
     def _reset_for_non_idle_source(self, payload: dict) -> None:
-        """Source flipped to a no-idle-handling source (TV, line-in, etc.).
-        Clear caches, release the user pin, cancel any idle task.
+        """Every event on a no-idle-handling source (TV, radio, unknown):
+        keep the session state empty and cancel any idle task, whatever
+        set them since the source change.
         """
         state = self.state
         if payload["source"] in ("vinyl", "airplay", "streaming"):
             return
-        state.last_vinyl = None
-        state.last_vinyl_confidence_set_at = None
-        state.last_shazam_match_unix_ts = None
-        state.last_pin_unix_ts = None
-        state.last_unmatched_after_match_unix_ts = None
-        state.pending_shazam_only.clear()
-        state.recent_fp_hits.clear()
-        state.last_shazam_gated = None
-        state.recent_audible_edges.clear()
-        state.tracks_seen_since_audible_edge.clear()
-        state.audible_up_at_mono = None
-        state.recent_heartbeat_levels.clear()
         if state.user_track_pin is not None:
             log.info("pin released: reason=source_flip new_source=%s", payload["source"])
-        state.user_track_pin = None
-        state.pin_different_track_streak = 0
-        state.fingerprint_anchor = None
+        state.reset_vinyl_session()
         if state.idle_task is not None and not state.idle_task.done():
             state.idle_task.cancel()
             state.idle_task = None

@@ -193,8 +193,12 @@ class _AdvanceMixin:
     def _load_locked_tracks(state: "State") -> list[dict] | None:
         """Return the catalog tracklist for the currently-locked release,
         or None when no lock exists / catalog miss / empty tracklist.
+        last_vinyl also caches the current AirPlay or streaming track for
+        the repoll; only a vinyl payload is an album lock.
         """
         if state.last_vinyl is None:
+            return None
+        if state.last_vinyl.get("source") != "vinyl":
             return None
         locked_rid = state.last_vinyl.get("release_id")
         locked_mbid = state.last_vinyl.get("release_mbid")
