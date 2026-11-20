@@ -147,6 +147,14 @@ interface KioskStore {
   setPinErrorReason: (reason: string | null) => void;
   /** Optimistic clear of `payload.guess` after a reject/timeout. */
   clearGuess: () => void;
+  /**
+   * The guess whose card ran out unanswered. A later payload guessing the
+   * same track on the same release arrives without its guess, so the card
+   * does not come back; a guess for any other track drops the memory.
+   */
+  expiredGuess: { releaseId: number | null; position: string } | null;
+  /** The card's lifetime ran out: remember the guess and clear it. */
+  expireGuess: () => void;
 }
 
 type Setter = (partial: Partial<KioskStore>) => void;
@@ -164,7 +172,30 @@ const initialState = {
   learningChipPulses: 0,
   lastRecognizedAt: null as number | null,
   pinErrorReason: null as string | null,
+  expiredGuess: null as KioskStore['expiredGuess'],
 };
+
+function withoutGuess(p: NowPlaying): NowPlaying {
+  const { guess: _drop, ...rest } = p;
+  return rest as NowPlaying;
+}
+
+/**
+ * Apply the run-out memory to an incoming payload: returns the payload to
+ * show and the memory to keep.
+ */
+function applyExpiredGuess(
+  p: NowPlaying | null,
+  expired: KioskStore['expiredGuess'],
+): { payload: NowPlaying | null; expiredGuess: KioskStore['expiredGuess'] } {
+  if (!p?.guess || !expired) return { payload: p, expiredGuess: expired };
+  const same =
+    expired.position === p.guess.position &&
+    expired.releaseId === (p.release_id ?? null);
+  return same
+    ? { payload: withoutGuess(p), expiredGuess: expired }
+    : { payload: p, expiredGuess: null };
+}
 
 function recognitionIdentity(p: NowPlaying | null): string | null {
   if (!p) return null;
@@ -231,14 +262,15 @@ const fetchActions = (set: Setter, get: Getter) => ({
 });
 
 const setterActions = (set: Setter, get: Getter) => ({
-  setPayload: (p: NowPlaying | null) => {
+  setPayload: (incoming: NowPlaying | null) => {
     const prev = get().payload;
+    const { payload: p, expiredGuess } = applyExpiredGuess(incoming, get().expiredGuess);
     const prevId = recognitionIdentity(prev);
     const nextId = recognitionIdentity(p);
     if (nextId !== null && nextId !== prevId) {
-      set({ payload: p, lastRecognizedAt: Date.now() });
+      set({ payload: p, expiredGuess, lastRecognizedAt: Date.now() });
     } else {
-      set({ payload: p });
+      set({ payload: p, expiredGuess });
     }
   },
   setConnected: (c: boolean) => set({ connected: c }),
@@ -256,7 +288,14 @@ export const useStore = create<KioskStore>((set, get) => ({
   clearGuess: () =>
     set((s) => {
       if (!s.payload || !s.payload.guess) return s;
-      const { guess: _drop, ...rest } = s.payload;
-      return { payload: rest as typeof s.payload };
+      return { payload: withoutGuess(s.payload) };
     }),
+  expireGuess: () => {
+    const p = get().payload;
+    if (!p?.guess) return;
+    set({
+      expiredGuess: { releaseId: p.release_id ?? null, position: p.guess.position },
+    });
+    get().clearGuess();
+  },
 }));

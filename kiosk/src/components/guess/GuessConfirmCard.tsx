@@ -22,7 +22,7 @@ interface Props {
  *
  * No "No" button: there's no defensible "next guess" semantic without a
  * new backend endpoint, and the no-action path is the same as a No tap
- * (the drain runs out, state-decay falls through to NEEDS_ID).
+ * (the drain runs out and the card goes away for that track).
  *
  * See docs/features/inline-confirm-card-predicted/.
  */
