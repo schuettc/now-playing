@@ -1,12 +1,14 @@
 """Shazam-only gate, pin application, and idle timer.
 
-Contains: _shazam_only_gate_passes, _record_pending_shazam_agreement,
+Contains: _shazam_only_gate_passes, _following_owned_side,
+_record_pending_shazam_agreement,
 _shazam_level_gate, _apply_pin_decision, _idle_after_delay.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -43,6 +45,10 @@ class _ShazamGateMixin:
         user-initiated "Identify Now" scan publishes on the first attempt.
         The hit is still recorded in the agreement window so it can
         contribute to the count for the next regular heartbeat.
+
+        While a side of a Discogs release is being followed, such a match
+        is dropped without being recorded until that side's listed time is
+        up; an ``_instant`` clip (the user tapped Identify) still passes.
         """
         MIN_AGREEMENTS = 2
         if not self._shazam_level_gate(level_db, clip_path):
@@ -51,12 +57,15 @@ class _ShazamGateMixin:
         norm_title = (result.get("title") or "").strip().lower()
         if not norm_artist or not norm_title:
             return False
+        instant = clip_path.name.endswith("_instant.wav")
+        if not instant and self._following_owned_side(result, norm_artist, norm_title):
+            return False
         # Record this hit regardless of whether we're on an instant clip —
         # it contributes to the agreement window for subsequent heartbeats.
         matches = self._record_pending_shazam_agreement(norm_artist, norm_title)
         # _instant.wav clips bypass the agreement check: the user explicitly
         # triggered a scan and expects an immediate result.
-        if clip_path.name.endswith("_instant.wav"):
+        if instant:
             log.info(
                 "shazam-only confirmed (instant): artist=%r title=%r",
                 result.get("artist"), result.get("title"),
@@ -73,6 +82,28 @@ class _ShazamGateMixin:
             "shazam-only confirmed: artist=%r title=%r (no Discogs match)",
             result.get("artist"), result.get("title"),
         )
+        return True
+
+    def _following_owned_side(
+        self, result: dict, norm_artist: str, norm_title: str,
+    ) -> bool:
+        """True while the side timeline is following a Discogs release and
+        that side's listed time is not yet up. Logs once per distinct title.
+        """
+        state = self.state
+        tl = state.side_timeline
+        if (
+            tl is None or tl.release_id is None
+            or tl.side_ended(datetime.now(timezone.utc))
+        ):
+            return False
+        if state.offcollection_ignored != (norm_artist, norm_title):
+            state.offcollection_ignored = (norm_artist, norm_title)
+            log.info(
+                "shazam-only ignored: following release=%s side=%s until the "
+                "side ends (artist=%r title=%r)",
+                tl.release_id, tl.side, result.get("artist"), result.get("title"),
+            )
         return True
 
     def _record_pending_shazam_agreement(

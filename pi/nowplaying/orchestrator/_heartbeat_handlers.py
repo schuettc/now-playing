@@ -206,6 +206,10 @@ class HeartbeatHandlersMixin:
         # hallucination (silence noise) doesn't prevent the system from
         # accumulating MAX_UNMATCHED_STREAK / NEEDS_ID_STREAK.
         if rid is None and not self._shazam_only_gate_passes(level_db, clip_path, result):
+            if state.side_timeline is not None:
+                # A dropped match is no evidence about the side being
+                # followed: let the current track run out as on a miss.
+                await self._check_state_decay(audio_source_label, level_db)
             return
         # Cascade-derived state must never overwrite Sonos-authoritative
         # metadata for streaming/AirPlay sources. Guard fires before any state

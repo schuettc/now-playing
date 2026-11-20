@@ -47,6 +47,7 @@ class State:  # skylos: ignore SKY-Q501 — State is intentionally the orchestra
         self.predicted_position = None
         self.side_timeline = None
         self.quiet_began_at = None
+        self.offcollection_ignored = None
         self.pending_guess = None
         self.dismissed_guesses.clear()
         self.last_shazam_gated = None
@@ -191,6 +192,9 @@ class State:  # skylos: ignore SKY-Q501 — State is intentionally the orchestra
         # When the quiet now in progress began (the `silent` edge minus its
         # five-second delay), or None when sound is playing.
         self.quiet_began_at: datetime | None = None
+        # Normalised (artist, title) of the last match outside the
+        # collection that was ignored mid-side, so it is logged once.
+        self.offcollection_ignored: tuple[str, str] | None = None
         # Nested `guess` object stash. Set on a Shazam-miss + fingerprint-
         # miss heartbeat by the orchestrator's `_compute_track_guess`
         # helper; attached and cleared in `_anchor_and_publish` (single
