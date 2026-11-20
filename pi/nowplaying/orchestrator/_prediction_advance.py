@@ -25,6 +25,12 @@ if TYPE_CHECKING:
 log = logging.getLogger("nowplaying.main")
 
 
+# Successive matches on one track each give a start from their own offset;
+# within this many seconds of the timeline's start they are the same start,
+# and the timeline's is kept so the published start does not jitter.
+SAME_START_TOLERANCE_S = 2.0
+
+
 def iso_z(when: datetime) -> str:
     """UTC ISO-8601 to the second with a Z, the form track starts are
     published in."""
@@ -50,13 +56,14 @@ def follow_match_on_timeline(
     just been written to ``state.last_vinyl`` to the side timeline.
 
     A match on the timeline's current track leaves it alone, except that a
-    start the match itself supplied replaces the timeline's. A match on any
-    other track rebuilds the timeline there, starting at ``started_at``
-    (now when missing). A match with no track position, or on a release
-    with no track list, ends the timeline.
+    start the match itself supplied (an offset into the song) replaces the
+    timeline's when it differs by more than ``SAME_START_TOLERANCE_S``. A
+    match on any other track rebuilds the timeline there, starting at
+    ``started_at`` (now when missing). A match with no track position, or
+    on a release with no track list, ends the timeline.
 
     Returns the timeline's start when the match named the current track and
-    supplied none of its own, for the caller to show; otherwise None.
+    the timeline kept its own start, for the caller to show; otherwise None.
     """
     lv = state.last_vinyl or {}
     pos = lv.get("track_position")
@@ -69,7 +76,10 @@ def follow_match_on_timeline(
         tl is not None and vinyl and pos and tl.position == pos
         and (tl.release_id, tl.release_mbid) == (rid, mbid)
     ):
-        if supplied_start and start is not None:
+        if (
+            supplied_start and start is not None
+            and abs((start - tl.started_at).total_seconds()) > SAME_START_TOLERANCE_S
+        ):
             tl.started_at = start
             tl.by_run_out = False
             return None

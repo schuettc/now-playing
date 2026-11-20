@@ -398,13 +398,17 @@ class SonosHandlersMixin:
 
     async def _retime_current_track(self, start: str) -> None:
         """Move the start of the track on screen to ``start`` and publish it
-        again: the gap that belongs to a run-out boundary has arrived.
+        again: the gap that belongs to a run-out boundary has arrived. No
+        play is recorded: the run-out already recorded this track, and after
+        a long quiet a second record would be a second history row.
         """
         state = self.state
         state.track_started_at = start
         if state.predicted_position is not None:
             state.predicted_position["track_started_at"] = start
-            await self._republish_current_prediction(state, "vinyl", self.bcast)
+            payload = self._current_prediction_payload(state, "vinyl")
+            if payload is not None:
+                await self.bcast.publish(self._anchor_and_publish(payload))
             return
         if state.last_vinyl is not None:
             state.last_vinyl["track_started_at"] = start

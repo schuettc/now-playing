@@ -198,28 +198,238 @@ async def test_no_run_out_advance_while_quiet():
     orch.bcast.publish.assert_not_called()
 
 
-@pytest.mark.asyncio
-async def test_a_shazam_match_on_another_track_rebuilds_the_timeline(tmp_path: Path):
-    state = _following("B9", started_s_ago=100)
-    orch = _orch(state)
-    started = _iso(_ago(12))
-    result = {
-        "ts": _iso(_ago(0)), "artist": "Failure", "album": "Fantastic Planet",
-        "title": "The Nurse Who Loved Me", "track_position": "C13",
-        "release_id": RID, "match_method": "shazam", "tracklist": TRACKS,
-        "track_started_at": started,
-    }
-
-    with _catalog(), _history(), mock.patch(
+def _art():
+    return mock.patch(
         "nowplaying.orchestrator._publish_enrichment._art_url_for_release",
         return_value="/art/31427573",
-    ):
-        await orch._publish_shazam_match(result, "vinyl", tmp_path / "c.wav", -20.0)
+    )
+
+
+def _shazam(position: str, offset_s: float | None = None) -> dict:
+    """A Shazam result as `recognize_proto` builds it: the offset into the
+    song is `track_position_s`; there is no `track_started_at`."""
+    result = {
+        "ts": _iso(_ago(0)), "artist": "Failure", "album": "Fantastic Planet",
+        "title": BY_POS[position]["title"], "track_position": position,
+        "release_id": RID, "match_method": "shazam", "tracklist": TRACKS,
+    }
+    if offset_s is not None:
+        result["track_position_s"] = offset_s
+    return result
+
+
+def _since(when: datetime) -> float:
+    return (_ago(0) - when).total_seconds()
+
+
+@pytest.mark.asyncio
+async def test_a_shazam_match_on_another_track_rebuilds_the_timeline(tmp_path: Path):
+    """The start is Shazam's offset into the song, not the fixed 12 s lead."""
+    state = _following("C12", started_s_ago=100)
+    orch = _orch(state)
+
+    with _catalog(), _history(), _art():
+        await orch._publish_shazam_match(
+            _shazam("C13", offset_s=150.0), "vinyl", tmp_path / "c.wav", -20.0,
+        )
 
     tl = state.side_timeline
     assert (tl.position, tl.side) == ("C13", "C")
-    assert _iso(tl.started_at) == started
+    assert abs(_since(tl.started_at) - 150) <= 2
     assert tl.by_run_out is False
+    published = _published(orch)[-1]
+    assert published["track_started_at"] == _iso(tl.started_at)
+    assert state.track_started_at == _iso(tl.started_at)
+
+
+@pytest.mark.asyncio
+async def test_a_shazam_offset_is_measured_from_the_clips_own_time(tmp_path: Path):
+    """Clips are named `<unix_ts>_heartbeat.wav`; recognition can lag it."""
+    state = _following("C12", started_s_ago=100)
+    orch = _orch(state)
+    clip = tmp_path / f"{int(_ago(8).timestamp())}_heartbeat.wav"
+
+    with _catalog(), _history(), _art():
+        await orch._publish_shazam_match(
+            _shazam("C13", offset_s=150.0), "vinyl", clip, -20.0,
+        )
+
+    assert abs(_since(state.side_timeline.started_at) - 158) <= 2
+
+
+@pytest.mark.asyncio
+async def test_a_shazam_match_on_another_track_with_no_offset_uses_the_lead(tmp_path: Path):
+    state = _following("C12", started_s_ago=100)
+    orch = _orch(state)
+
+    with _catalog(), _history(), _art():
+        await orch._publish_shazam_match(
+            _shazam("C13"), "vinyl", tmp_path / "c.wav", -20.0,
+        )
+
+    tl = state.side_timeline
+    assert tl.position == "C13"
+    assert abs(_since(tl.started_at) - 12) <= 2
+    assert _published(orch)[-1]["track_started_at"] == _iso(tl.started_at)
+
+
+@pytest.mark.asyncio
+async def test_a_shazam_offset_on_the_current_track_replaces_its_start(tmp_path: Path):
+    state = _following("B9", started_s_ago=100)
+    state.side_timeline.by_run_out = True
+    orch = _orch(state)
+
+    with _catalog(), _history(), _art():
+        await orch._publish_shazam_match(
+            _shazam("B9", offset_s=130.0), "vinyl", tmp_path / "c.wav", -20.0,
+        )
+
+    tl = state.side_timeline
+    assert tl.position == "B9"
+    assert abs(_since(tl.started_at) - 130) <= 2
+    assert tl.by_run_out is False
+    assert _published(orch)[-1]["track_started_at"] == _iso(tl.started_at)
+    assert state.track_started_at == _iso(tl.started_at)
+
+
+@pytest.mark.asyncio
+async def test_repeated_shazam_matches_do_not_jitter_the_start(tmp_path: Path):
+    """Each heartbeat's offset lands within a second or two of the last."""
+    state = _following("B9", started_s_ago=100)
+    started = state.side_timeline.started_at
+    orch = _orch(state)
+
+    with _catalog(), _history(), _art():
+        await orch._publish_shazam_match(
+            _shazam("B9", offset_s=100.5), "vinyl", tmp_path / "c.wav", -20.0,
+        )
+
+    assert state.side_timeline.started_at == started
+    assert _published(orch)[-1]["track_started_at"] == _iso(started)
+
+
+@pytest.mark.asyncio
+async def test_rematch_of_the_previous_track_after_a_run_out_then_its_real_gap(tmp_path: Path):
+    """A2 is listed at 245 s but plays about 20 s longer: the run-out shows
+    A3, Shazam matches A2 once more 252 s in, then the real gap arrives. The
+    gap must fall in A2's window and show A3."""
+    state = _following("A2", started_s_ago=250)
+    orch = _orch(state)
+
+    with _catalog(), _history(), _art():
+        await orch._handle_unmatched_heartbeat("vinyl", -20.0)
+        assert state.side_timeline.position == "A3"
+        await orch._publish_shazam_match(
+            _shazam("A2", offset_s=252.0), "vinyl", tmp_path / "c.wav", -20.0,
+        )
+        assert state.side_timeline.position == "A2"
+        await _quiet_then_sound(orch, quiet_s=12)
+
+    assert state.side_timeline.position == "A3"
+    assert [p["track_position"] for p in _published(orch)] == ["A3", "A2", "A3"]
+
+
+def _fp_hit(position: str, position_s: float):
+    from nowplaying.vinyl.fingerprint import Hit
+
+    return Hit(
+        ref_id=1, release_id=RID, track_position=position, hits=80,
+        track_position_s=position_s,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_fingerprint_hit_on_another_track_does_not_inherit_the_locks_start():
+    """The lock's start is the last confirmed track's, minutes old. With it
+    the next gap read as the end of the side and flipped to C10 mid-side."""
+    state = _following("B7", started_s_ago=40)
+    orch = _orch(state)
+
+    with _catalog(), _history():
+        await orch._confirmation_hit_publish(
+            state, "vinyl", _fp_hit("B8", 20.0), None, -20.0,
+        )
+        tl = state.side_timeline
+        assert tl.position == "B8"
+        assert abs(_since(tl.started_at) - 20) <= 2
+        assert _published(orch)[-1]["track_started_at"] == _iso(tl.started_at)
+        state.fingerprint_anchor = None  # the audible edge clears it anyway
+        await _quiet_then_sound(orch, quiet_s=15)
+
+    assert (state.side_timeline.side, state.side_timeline.position) == ("B", "B8")
+
+
+@pytest.mark.asyncio
+async def test_a_fingerprint_hit_on_another_track_does_not_run_out_the_side():
+    state = _following("B5", started_s_ago=40)
+    orch = _orch(state)
+
+    with _catalog(), _history():
+        await orch._confirmation_hit_publish(
+            state, "vinyl", _fp_hit("B6", 20.0), None, -20.0,
+        )
+        state.fingerprint_anchor = None  # as after its TTL
+        for _ in range(3):
+            await orch._handle_unmatched_heartbeat("vinyl", -20.0)
+
+    assert {p["track_position"] for p in _published(orch)} == {"B6"}
+    assert state.side_timeline.position == "B6"
+
+
+@pytest.mark.asyncio
+async def test_retime_after_a_long_quiet_does_not_write_a_second_history_row(
+    tmp_path: Path, monkeypatch,
+):
+    """Past history's 60 s coalesce window a re-publish that records a play
+    inserts a new row and fires a second Last.fm now-playing."""
+    import sqlite3
+
+    from nowplaying.history import db
+
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "h.sqlite")
+    monkeypatch.setattr(db, "DATA_DIR", tmp_path)
+    db.init_db()
+    clock = {"t": 1_800_000_000}
+    monkeypatch.setattr(db.time, "time", lambda: clock["t"])
+    state = _following("B8", started_s_ago=270)
+    orch = _orch(state)
+
+    with _catalog():
+        await orch._handle_unmatched_heartbeat("vinyl", -20.0)  # run-out: B9
+        assert state.side_timeline.position == "B9"
+        clock["t"] += 90
+        await _quiet_then_sound(orch, quiet_s=80)  # retime
+
+    rows = sqlite3.connect(tmp_path / "h.sqlite").execute(
+        "SELECT track_position FROM plays",
+    ).fetchall()
+    assert [r[0] for r in rows].count("B9") == 1
+    assert _published(orch)[-1]["track_position"] == "B9"
+    assert abs(_since(_parse(_published(orch)[-1]["track_started_at"]))) <= 2
+
+
+@pytest.mark.asyncio
+async def test_next_track_pick_is_not_undone_by_the_old_prediction():
+    from nowplaying.control.next import next_track
+
+    state = _following("C10", started_s_ago=60)
+    orch = _orch(state)
+    req = mock.MagicMock()
+    req.app = {"state": state, "broadcaster": orch.bcast}
+    req.json = mock.AsyncMock(
+        return_value={"release_id": RID, "current_track_position": "C10"},
+    )
+
+    with _catalog(), _history(), mock.patch(
+        "nowplaying.control.next._maybe_schedule_art_fetch",
+    ):
+        await next_track(req)
+        assert state.side_timeline.position == "C11"
+        for _ in range(2):
+            await orch._handle_unmatched_heartbeat("vinyl", -20.0)
+
+    assert state.predicted_position is None
+    assert [p["track_position"] for p in _published(orch)] == ["C11"]
 
 
 @pytest.mark.asyncio
@@ -338,3 +548,27 @@ def test_a_pick_of_the_current_track_keeps_the_timelines_start():
     assert state.side_timeline.started_at == started
     assert state.track_started_at == _iso(started)
     assert state.last_vinyl["track_started_at"] == _iso(started)
+
+
+@pytest.mark.asyncio
+async def test_repeated_offsets_do_not_jitter_the_start_without_a_timeline(tmp_path: Path):
+    """A release with no track list has no timeline; its published start
+    still must not move by a second on every heartbeat."""
+    state = State()
+    state.sonos_source = "vinyl"
+    orch = _orch(state)
+    no_tracks = mock.patch("nowplaying.catalog.get_release", return_value=None)
+
+    with no_tracks, _history(), _art():
+        await orch._publish_shazam_match(
+            _shazam("B9", offset_s=50.0), "vinyl", tmp_path / "c.wav", -20.0,
+        )
+        first = _published(orch)[-1]["track_started_at"]
+        assert abs(_since(_parse(first)) - 50) <= 2
+        await orch._publish_shazam_match(
+            _shazam("B9", offset_s=48.6), "vinyl", tmp_path / "c.wav", -20.0,
+        )
+
+    assert state.side_timeline is None
+    assert _published(orch)[-1]["track_started_at"] == first
+    assert state.track_started_at == first

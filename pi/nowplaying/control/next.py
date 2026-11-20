@@ -151,6 +151,9 @@ def _advance_last_vinyl(
     if next_side:
         state.last_vinyl["side"] = next_side
     state.track_started_at = now_iso
+    # The pick is the track on screen now; a prediction made before it must
+    # not be re-published over it.
+    state.predicted_position = None
     state.pending_shazam_only.clear()
 
 

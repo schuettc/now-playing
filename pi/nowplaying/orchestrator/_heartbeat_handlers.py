@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -31,7 +32,13 @@ from nowplaying.vinyl.runtime import to_now_playing_vinyl
 from nowplaying.orchestrator.fingerprint import (
     _build_blind_fingerprint_payload,
 )
-from nowplaying.orchestrator._prediction_advance import follow_match_on_timeline
+from nowplaying.orchestrator._prediction_advance import (
+    SAME_START_TOLERANCE_S,
+    _parse_iso,
+    follow_match_on_timeline,
+    iso_z,
+)
+from nowplaying.orchestrator._publish_enrichment import _apply_clean_display_title
 from nowplaying.orchestrator.io_helpers import _read_bytes
 from nowplaying.orchestrator.pin import (
     _fingerprint_anchor_ttl_expired,
@@ -48,6 +55,29 @@ if TYPE_CHECKING:
     pass
 
 log = logging.getLogger("nowplaying.main")
+
+
+# A clip older than this is not the heartbeat being handled; its name is
+# not trusted as the time the audio was taken.
+_CLIP_TIME_MAX_AGE_S = 120.0
+
+
+def _clip_time(clip_path: Path | None) -> datetime:
+    """When the clip was taken: the unix time the capture daemon puts at
+    the front of its name (``<unix_ts>_heartbeat.wav``), or now when there
+    is no clip, the name has no such time, or it is not a recent one."""
+    now = datetime.now(timezone.utc)
+    if clip_path is None:
+        return now
+    try:
+        taken = datetime.fromtimestamp(
+            int(clip_path.name.split("_", 1)[0]), timezone.utc,
+        )
+    except (ValueError, OverflowError, OSError):
+        return now
+    if not 0 <= (now - taken).total_seconds() <= _CLIP_TIME_MAX_AGE_S:
+        return now
+    return taken
 
 
 def _best_other_track_hits(hits) -> int:
@@ -253,25 +283,71 @@ class HeartbeatHandlersMixin:
             state.idle_task = None
         if rid is not None:
             state.pending_shazam_only.clear()
-        await self.bcast.publish(self._anchor_match(payload))
+        # Shazam's offset says when this track started; a pin-honoured
+        # payload is the pinned track, not the one the offset belongs to.
+        offset_s = (
+            result.get("track_position_s")
+            if payload.get("match_method") == "shazam" else None
+        )
+        await self.bcast.publish(self._anchor_match(payload, offset_s, clip_path))
         await _oc.history.record_play(payload)
 
-    def _anchor_match(self, payload: dict) -> dict:
+    def _anchor_match(
+        self, payload: dict, offset_s: float | None = None,
+        clip_path: Path | None = None,
+    ) -> dict:
         """Settle a match's track start for publishing and make the side
         timeline follow the match. ``state.last_vinyl`` is already this
-        payload. A match on the track the timeline already holds, with no
-        start of its own, is shown with the timeline's start.
+        payload.
+
+        ``offset_s`` is how far into the song the match placed the clip
+        (Shazam's offset, or a fingerprint ref's position): the track then
+        started that long before the clip was taken, and that is the start
+        the match supplies. With no offset the match supplies none: a start
+        the payload inherited (a fingerprint payload copies the lock, a
+        pin-honoured one the pinned track) is dropped, a new track gets the
+        match method's lead, and a match on the track the timeline already
+        holds is shown with the timeline's start.
         """
-        supplied = bool(payload.get("track_started_at"))
+        state = self.state
+        if offset_s is None:
+            payload.pop("track_started_at", None)
+        else:
+            start = iso_z(_clip_time(clip_path) - timedelta(seconds=offset_s))
+            if self._is_the_published_start(payload, start):
+                # The same track, placed within a second or two of where it
+                # already is: keep the start so it does not jitter.
+                start = state.track_started_at
+            payload["track_started_at"] = start
+            # Also for a re-match of the track on screen, whose published
+            # identity has not changed.
+            state.track_started_at = start
         published = self._anchor_and_publish(payload)
         keep = follow_match_on_timeline(
-            self.state, started_at=published.get("track_started_at"),
-            supplied_start=supplied,
+            state, started_at=published.get("track_started_at"),
+            supplied_start=offset_s is not None,
         )
         if keep is not None:
             published["track_started_at"] = keep
-            self.state.track_started_at = keep
+            state.track_started_at = keep
         return published
+
+    def _is_the_published_start(self, payload: dict, start: str) -> bool:
+        """True when ``payload`` is the track last published and ``start``
+        is within ``SAME_START_TOLERANCE_S`` of the start it was given."""
+        state = self.state
+        _apply_clean_display_title(payload)
+        identity = (
+            payload.get("artist"), payload.get("title"),
+            payload.get("track_position"),
+        )
+        if identity != state.last_published_identity:
+            return False
+        shown, new = _parse_iso(state.track_started_at), _parse_iso(start)
+        return (
+            shown is not None and new is not None
+            and abs((new - shown).total_seconds()) <= SAME_START_TOLERANCE_S
+        )
 
     async def _lookup_fingerprint_hit(
         self, clip_path, locked_rid: int | None,
@@ -437,7 +513,7 @@ class HeartbeatHandlersMixin:
             state.idle_task = None
         # Re-anchor on the new position if the hit is strong enough.
         self._set_fingerprint_anchor(state, top, payload)
-        await self.bcast.publish(self._anchor_match(payload))
+        await self.bcast.publish(self._anchor_match(payload, top.track_position_s))
         try:
             await _oc.history.record_play(payload)
         except Exception as e:  # noqa: BLE001
@@ -486,7 +562,7 @@ class HeartbeatHandlersMixin:
         # outcome-driven.
         if wav_bytes is not None:
             await self._schedule_coverage_promotion(wav_bytes, level_db)
-        await self.bcast.publish(self._anchor_match(payload))
+        await self.bcast.publish(self._anchor_match(payload, top.track_position_s))
         try:
             await _oc.history.record_play(payload)
         except Exception as e:  # noqa: BLE001
@@ -642,7 +718,7 @@ class HeartbeatHandlersMixin:
         # normally but do not set an anchor — they're sufficient to identify
         # the track but not authoritative enough to pin predicted-advance.
         self._set_fingerprint_anchor(state, top, payload)
-        await self.bcast.publish(self._anchor_match(payload))
+        await self.bcast.publish(self._anchor_match(payload, top.track_position_s))
         try:
             await _oc.history.record_play(payload)
         except Exception as e:  # noqa: BLE001
