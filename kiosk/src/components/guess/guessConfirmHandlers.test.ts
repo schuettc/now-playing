@@ -92,6 +92,37 @@ describe('the Best guess card running out', () => {
     expect(useStore.getState().payload?.guess).toEqual(BLANK);
   });
 
+  it('shows the card again when the track is played again later', () => {
+    showAndExpire(BLANK);
+
+    // The next track is confirmed by Shazam: no guess on its payload.
+    useStore.getState().setPayload({
+      ts: '2026-11-20T16:06:49Z',
+      state: 'PLAYING',
+      source: 'vinyl',
+      release_id: 31427573,
+      track_position: 'B7',
+      title: 'Segue 2',
+    });
+    expect(useStore.getState().expiredGuess).toBeNull();
+
+    useStore.getState().setPayload(predicted(31427573, BLANK));
+    expect(useStore.getState().payload?.guess).toEqual(BLANK);
+  });
+
+  it('shows the card again after the screen went idle', () => {
+    showAndExpire(BLANK);
+
+    useStore.getState().setPayload({
+      ts: '2026-11-20T16:20:00Z',
+      state: 'STOPPED',
+      source: 'vinyl',
+    });
+    useStore.getState().setPayload(predicted(31427573, BLANK));
+
+    expect(useStore.getState().payload?.guess).toEqual(BLANK);
+  });
+
   it('shows the card for the same position on another release', () => {
     showAndExpire(BLANK);
 

@@ -150,7 +150,8 @@ interface KioskStore {
   /**
    * The guess whose card ran out unanswered. A later payload guessing the
    * same track on the same release arrives without its guess, so the card
-   * does not come back; a guess for any other track drops the memory.
+   * does not come back. Dropped once another track or release is playing,
+   * or nothing is.
    */
   expiredGuess: { releaseId: number | null; position: string } | null;
   /** The card's lifetime ran out: remember the guess and clear it. */
@@ -182,17 +183,24 @@ function withoutGuess(p: NowPlaying): NowPlaying {
 
 /**
  * Apply the run-out memory to an incoming payload: returns the payload to
- * show and the memory to keep.
+ * show and the memory to keep. The memory lasts only while that track is
+ * still the one playing: any other track or release, or a payload that is
+ * not PLAYING (needs-id, idle), drops it, so a later play of the track
+ * gets its card.
  */
 function applyExpiredGuess(
   p: NowPlaying | null,
   expired: KioskStore['expiredGuess'],
 ): { payload: NowPlaying | null; expiredGuess: KioskStore['expiredGuess'] } {
-  if (!p?.guess || !expired) return { payload: p, expiredGuess: expired };
-  const same =
-    expired.position === p.guess.position &&
-    expired.releaseId === (p.release_id ?? null);
-  return same
+  if (!expired) return { payload: p, expiredGuess: null };
+  const sameTrack =
+    p != null &&
+    p.state === 'PLAYING' &&
+    expired.releaseId === (p.release_id ?? null) &&
+    expired.position === p.track_position;
+  if (!sameTrack) return { payload: p, expiredGuess: null };
+  if (!p.guess) return { payload: p, expiredGuess: expired };
+  return p.guess.position === expired.position
     ? { payload: withoutGuess(p), expiredGuess: expired }
     : { payload: p, expiredGuess: null };
 }
