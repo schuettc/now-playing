@@ -64,6 +64,8 @@ The published payload carries `match_method: "predicted"` and `predicted: true` 
 
 ## State decay → NEEDS_ID
 
+This applies only when no side timeline is followed (a release with no track list). While a side is followed, a track whose listed time is up gives way to the next track on the side, and the last track of a side stays until a flip, a match or idle.
+
 If predicted advancement runs out of confidence — say, the predicted track also can't be Shazam-confirmed and the track's expected play time is up (or, when the track's duration is unknown, the last real recognition is more than 45 seconds old) — the orchestrator falls through to NEEDS_ID and the kiosk shows the "couldn't identify" screen with a manual-pick link.
 
 ```

@@ -1,6 +1,7 @@
 """HeartbeatHandlersMixin — heartbeat recognition cascade.
 
 Contains: on_heartbeat, _handle_non_shazam_heartbeat, _publish_shazam_match,
+_anchor_match,
 _lookup_fingerprint_hit, _try_fingerprint_fallback,
 _try_confirmation_fingerprint, _try_blind_fingerprint, _set_fingerprint_anchor,
 _schedule_coverage_promotion, _classify_heartbeat_source,
@@ -30,6 +31,7 @@ from nowplaying.vinyl.runtime import to_now_playing_vinyl
 from nowplaying.orchestrator.fingerprint import (
     _build_blind_fingerprint_payload,
 )
+from nowplaying.orchestrator._prediction_advance import follow_match_on_timeline
 from nowplaying.orchestrator.io_helpers import _read_bytes
 from nowplaying.orchestrator.pin import (
     _fingerprint_anchor_ttl_expired,
@@ -247,8 +249,25 @@ class HeartbeatHandlersMixin:
             state.idle_task = None
         if rid is not None:
             state.pending_shazam_only.clear()
-        await self.bcast.publish(self._anchor_and_publish(payload))
+        await self.bcast.publish(self._anchor_match(payload))
         await _oc.history.record_play(payload)
+
+    def _anchor_match(self, payload: dict) -> dict:
+        """Settle a match's track start for publishing and make the side
+        timeline follow the match. ``state.last_vinyl`` is already this
+        payload. A match on the track the timeline already holds, with no
+        start of its own, is shown with the timeline's start.
+        """
+        supplied = bool(payload.get("track_started_at"))
+        published = self._anchor_and_publish(payload)
+        keep = follow_match_on_timeline(
+            self.state, started_at=published.get("track_started_at"),
+            supplied_start=supplied,
+        )
+        if keep is not None:
+            published["track_started_at"] = keep
+            self.state.track_started_at = keep
+        return published
 
     async def _lookup_fingerprint_hit(
         self, clip_path, locked_rid: int | None,
@@ -414,7 +433,7 @@ class HeartbeatHandlersMixin:
             state.idle_task = None
         # Re-anchor on the new position if the hit is strong enough.
         self._set_fingerprint_anchor(state, top, payload)
-        await self.bcast.publish(self._anchor_and_publish(payload))
+        await self.bcast.publish(self._anchor_match(payload))
         try:
             await _oc.history.record_play(payload)
         except Exception as e:  # noqa: BLE001
@@ -463,7 +482,7 @@ class HeartbeatHandlersMixin:
         # outcome-driven.
         if wav_bytes is not None:
             await self._schedule_coverage_promotion(wav_bytes, level_db)
-        await self.bcast.publish(self._anchor_and_publish(payload))
+        await self.bcast.publish(self._anchor_match(payload))
         try:
             await _oc.history.record_play(payload)
         except Exception as e:  # noqa: BLE001
@@ -619,7 +638,7 @@ class HeartbeatHandlersMixin:
         # normally but do not set an anchor — they're sufficient to identify
         # the track but not authoritative enough to pin predicted-advance.
         self._set_fingerprint_anchor(state, top, payload)
-        await self.bcast.publish(self._anchor_and_publish(payload))
+        await self.bcast.publish(self._anchor_match(payload))
         try:
             await _oc.history.record_play(payload)
         except Exception as e:  # noqa: BLE001

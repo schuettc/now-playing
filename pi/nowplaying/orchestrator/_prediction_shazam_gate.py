@@ -198,6 +198,8 @@ class _ShazamGateMixin:
         state.last_pin_unix_ts = None
         clear_first_miss_after_match(state)
         state.predicted_position = None
+        state.side_timeline = None
+        state.quiet_began_at = None
         # Defensive: idle without a subsequent publish would leak a stale guess.
         state.pending_guess = None
         state.pending_shazam_only.clear()

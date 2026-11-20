@@ -1,16 +1,18 @@
 """Predicted-advance helpers — resolve and publish the next track.
 
-Contains: _republish_current_prediction, _resolve_advanced_track,
-_try_advance_prediction, _load_locked_tracks,
+Contains: follow_match_on_timeline, _republish_current_prediction,
+_resolve_advanced_track, _try_advance_prediction, _load_locked_tracks,
 _resolve_advance_source_position.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from nowplaying import catalog as catalog_dispatch, history
+from nowplaying.orchestrator import side_timeline
 from nowplaying.orchestrator.prediction import (
     _advance_predicted_position,
     _build_predicted_payload,
@@ -21,6 +23,70 @@ if TYPE_CHECKING:
     from nowplaying.orchestrator.state import State
 
 log = logging.getLogger("nowplaying.main")
+
+
+def iso_z(when: datetime) -> str:
+    """UTC ISO-8601 to the second with a Z, the form track starts are
+    published in."""
+    return (
+        when.astimezone(timezone.utc)
+        .isoformat(timespec="seconds").replace("+00:00", "Z")
+    )
+
+
+def _parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+def follow_match_on_timeline(
+    state: "State", *, started_at: str | None, supplied_start: bool,
+) -> str | None:
+    """Apply a match (Shazam, fingerprint, pin or a user's pick) that has
+    just been written to ``state.last_vinyl`` to the side timeline.
+
+    A match on the timeline's current track leaves it alone, except that a
+    start the match itself supplied replaces the timeline's. A match on any
+    other track rebuilds the timeline there, starting at ``started_at``
+    (now when missing). A match with no track position, or on a release
+    with no track list, ends the timeline.
+
+    Returns the timeline's start when the match named the current track and
+    supplied none of its own, for the caller to show; otherwise None.
+    """
+    lv = state.last_vinyl or {}
+    pos = lv.get("track_position")
+    vinyl = lv.get("source") == "vinyl"
+    rid = int(lv["release_id"]) if lv.get("release_id") is not None else None
+    mbid = lv.get("release_mbid")
+    start = _parse_iso(started_at)
+    tl = state.side_timeline
+    if (
+        tl is not None and vinyl and pos and tl.position == pos
+        and (tl.release_id, tl.release_mbid) == (rid, mbid)
+    ):
+        if supplied_start and start is not None:
+            tl.started_at = start
+            tl.by_run_out = False
+            return None
+        return iso_z(tl.started_at)
+    tracks = _AdvanceMixin._load_locked_tracks(state) if pos else None
+    if tracks is None:
+        state.side_timeline = None
+        return None
+    state.side_timeline = side_timeline.start_at(
+        tracks, pos, start or datetime.now(timezone.utc), rid, mbid,
+    )
+    if state.side_timeline is not None:
+        log.info(
+            "timeline: set side=%s position=%s start=%s (match)",
+            state.side_timeline.side, pos, iso_z(state.side_timeline.started_at),
+        )
+    return None
 
 
 class _AdvanceMixin:

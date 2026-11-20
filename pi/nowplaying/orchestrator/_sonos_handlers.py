@@ -4,17 +4,20 @@ Contains: adopt_sonos_coord, on_sonos_event, _process_sonos_event, _handle_stick
 _maybe_cancel_idle_on_resume, _reconcile_capture_emit,
 _recover_unmatched_from_cache, _reset_for_non_idle_source,
 _maybe_arm_streaming_idle, on_capture_state, _handle_capture_silent,
-_handle_capture_audible.
+_handle_capture_audible, _follow_timeline_on_sound, _retime_current_track.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import signal
+from datetime import datetime, timedelta, timezone
 
 import recognize_proto
 
 from nowplaying import history
+from nowplaying.orchestrator import side_timeline
+from nowplaying.orchestrator._prediction_advance import iso_z
 from nowplaying.orchestrator.payload import sonos_to_payload
 from nowplaying.orchestrator.streaming_idle import (
     STREAMING_IDLE_DELAY_S,
@@ -27,6 +30,10 @@ from nowplaying.orchestrator.streaming_idle import (
 from nowplaying.vinyl.runtime import signal_capture
 
 log = logging.getLogger("nowplaying.main")
+
+# The capture daemon reports `silent` once the quiet has lasted this long,
+# so the quiet began this much before the edge.
+SILENT_EDGE_DELAY_S = 5.0
 
 
 class SonosHandlersMixin:
@@ -271,6 +278,9 @@ class SonosHandlersMixin:
         """
         state = self.state
         self._record_audible_edge_for_llm(state, "silent")
+        state.quiet_began_at = (
+            datetime.now(timezone.utc) - timedelta(seconds=SILENT_EDGE_DELAY_S)
+        )
         if state.idle_task is not None and not state.idle_task.done():
             return
         state.idle_task = asyncio.create_task(
@@ -278,19 +288,25 @@ class SonosHandlersMixin:
         )
 
     async def _handle_capture_audible(self) -> None:
-        """Audible IPC event = "new record / side started". Clear per-side
-        recognition state, then either advance the predicted tracklist
-        (album-locked) or publish a spinner transition (no lock).
+        """Audible IPC event: sound is back. While a side timeline is
+        followed it decides what the quiet was (a track boundary, a flip or
+        a quiet passage). Otherwise this is "new record / side started":
+        clear per-side recognition state, then either advance the predicted
+        tracklist (album-locked) or publish a spinner transition (no lock).
         """
         state = self.state
         bcast = self.bcast
         self._record_audible_edge_for_llm(state, "audible")
+        quiet_began_at = state.quiet_began_at
+        state.quiet_began_at = None
         state.pending_shazam_only.clear()
-        state.track_started_at = None
         # A fingerprint anchor describes the audio before this edge. Past a
         # quiet gap it must not hold the display on that track or tag new
         # refs with it; the next strong match on fresh audio sets it again.
         state.fingerprint_anchor = None
+        if await self._follow_timeline_on_sound(quiet_began_at):
+            return
+        state.track_started_at = None
         log.info("audible: cleared per-side recognition state")
         audio_source_label = "vinyl"
         if state.last_vinyl is not None:
@@ -327,3 +343,70 @@ class SonosHandlersMixin:
             audio_source_label,
         )
         await bcast.publish(payload)
+
+    async def _follow_timeline_on_sound(
+        self, quiet_began_at: datetime | None,
+    ) -> bool:
+        """Let the side timeline decide what the quiet that just ended was,
+        and carry out its action. Returns False when no timeline is being
+        followed (the caller then behaves as it did before timelines).
+        """
+        state = self.state
+        tl = state.side_timeline
+        if tl is None:
+            return False
+        tracks = self._load_locked_tracks(state)
+        if tracks is None:
+            # The lock or its track list is gone: nothing to follow.
+            state.side_timeline = None
+            return False
+        if state.idle_task is not None and not state.idle_task.done():
+            state.idle_task.cancel()
+            state.idle_task = None
+        was = tl.position
+        action = side_timeline.on_sound_returned(
+            tl, tracks, quiet_began_at, datetime.now(timezone.utc),
+        )
+        start = iso_z(tl.started_at)
+        if action is side_timeline.Action.RETIME:
+            log.info("timeline: retime position=%s start=%s", tl.position, start)
+            await self._retime_current_track(start)
+        elif action is side_timeline.Action.IGNORE:
+            log.info(
+                "timeline: ignored gap position=%s (outside window)", tl.position,
+            )
+        else:
+            if action is side_timeline.Action.FLIP:
+                log.info(
+                    "timeline: flip side=%s position=%s", tl.side, tl.position,
+                )
+            else:
+                log.info(
+                    "timeline: advance side=%s position=%s start=%s (gap)",
+                    tl.side, tl.position, start,
+                )
+            if not await self._try_advance_prediction(
+                state, "vinyl", self.bcast,
+                target_track_position=tl.position,
+                track_started_at_override=start,
+            ):
+                log.warning(
+                    "timeline: could not show position=%s (was %s)",
+                    tl.position, was,
+                )
+        return True
+
+    async def _retime_current_track(self, start: str) -> None:
+        """Move the start of the track on screen to ``start`` and publish it
+        again: the gap that belongs to a run-out boundary has arrived.
+        """
+        state = self.state
+        state.track_started_at = start
+        if state.predicted_position is not None:
+            state.predicted_position["track_started_at"] = start
+            await self._republish_current_prediction(state, "vinyl", self.bcast)
+            return
+        if state.last_vinyl is not None:
+            state.last_vinyl["track_started_at"] = start
+            await self.bcast.publish(self._anchor_and_publish(state.last_vinyl))
+

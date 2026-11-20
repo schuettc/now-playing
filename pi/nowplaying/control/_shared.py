@@ -7,6 +7,10 @@ import time
 from datetime import datetime
 
 from nowplaying import art_cache
+from nowplaying.orchestrator._prediction_advance import (
+    follow_match_on_timeline,
+    iso_z,
+)
 from nowplaying.orchestrator.pin import ASSUMED_LOCK_POSITION_S, MIN_PIN_TTL_S
 
 log = logging.getLogger("nowplaying.control")
@@ -210,6 +214,24 @@ def _audible_edge_unix_ts(state) -> int | None:
         return int(dt.timestamp())
     except (ValueError, AttributeError):
         return None
+
+
+def _follow_pick_on_timeline(state) -> None:
+    """Make the side timeline follow the track the user just picked (now in
+    ``state.last_vinyl``), and show that track with the timeline's start.
+
+    A pick of the track the timeline already holds keeps its start; any
+    other pick starts the timeline there at ``state.track_started_at``.
+    """
+    follow_match_on_timeline(
+        state, started_at=state.track_started_at, supplied_start=False,
+    )
+    tl = state.side_timeline
+    if tl is None or state.last_vinyl is None:
+        return
+    start = iso_z(tl.started_at)
+    state.track_started_at = start
+    state.last_vinyl["track_started_at"] = start
 
 
 def _now_iso() -> str:

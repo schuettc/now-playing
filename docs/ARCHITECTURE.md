@@ -97,6 +97,8 @@ class (`orchestrator/_class.py`) is assembled from the mixins named below;
 | `track_started_at` | ISO-8601 timestamp anchored at most recent identity change. Back-dated via `RECOGNITION_LEAD_S` for client elapsed-clock alignment. |
 | `last_published_identity` | `(artist, title, track_position)` tuple of the last publish. Used to detect "actually changed" vs "same track re-confirmed." |
 | `predicted_position` | Tracklist-aware advancement state `{release_id, side, track_position, index_in_side}`. **Separate from `last_vinyl`** so a Shazam miss never pollutes the confirmed lock. |
+| `side_timeline` | The side being followed (`orchestrator/side_timeline.py`): current track, its start, and the expected boundaries from listed lengths. Set by any match on a release with a track list; cleared on idle or source change. While set, it alone decides gap, run-out and flip track changes. |
+| `quiet_began_at` | When the quiet in progress began (the `silent` edge minus 5s), or `None`. |
 | `user_track_pin` | When the user manually picks a track via "Wrong Track" / `/identify`, the pinned identity is recorded here and **honored** in subsequent heartbeats until a release condition fires. Replaces the deleted album-lock mechanism that previously made manual picks stick. Shape: full payload identity (release_id, artist, album, title, track_position, side, art_url, duration_seconds, tracklist) plus `pinned_at_mono` for TTL. |
 | `pin_different_track_streak` | Consecutive Shazam hits on a different track within the pinned release. Reaches `PIN_DIFFERENT_TRACK_RELEASE_STREAK = 3` → pin released (the user moved past their pinned track). |
 
@@ -126,7 +128,9 @@ Back-dates `track_started_at` so client elapsed-time clocks line up with
 audio. The streak-seeded predicted path (`_seed_prediction_from_last_vinyl`
 in `orchestrator/_prediction_unmatched.py`) computes a custom
 back-date of `NEEDS_ID_STREAK * 15 + 2 = 32s` because by the time the
-streak threshold trips, the song has actually been playing ~30s.
+streak threshold trips, the song has actually been playing ~30s. That path
+runs only when no side timeline is followed; with one, a track made current
+by run-out starts at the previous track's listed end.
 
 ### `on_heartbeat` branching — `orchestrator/_heartbeat_handlers.py` — `HeartbeatHandlersMixin.on_heartbeat`
 
@@ -135,7 +139,9 @@ streak threshold trips, the song has actually been playing ~30s.
 3. **Recognize call**. Passes `preferred_release_id` from `last_vinyl`.
 4. **Unmatched branch**:
    - `streak < NEEDS_ID_STREAK` → wait silently.
+   - A side timeline is followed and the current track's listed time is up (no quiet in progress, a next track on the side) → **publish the next track**, started at that listed end. The last track of a side stays.
    - `last_vinyl + predicted_position` set → **re-publish current prediction** (extends history row).
+   - A side timeline is followed → stop here: no streak-seeded prediction, no NEEDS_ID.
    - `streak == NEEDS_ID_STREAK` AND lock → **seed prediction** via `_try_advance_prediction` with back-dated `track_started_at`. Falls through to NEEDS_ID if end-of-side.
    - `streak > NEEDS_ID_STREAK` and no prediction → "still in NEEDS_ID, no republish."
    - Original NEEDS_ID publish (no lock or end-of-side): kiosk shows "couldn't identify."
@@ -147,8 +153,9 @@ streak threshold trips, the song has actually been playing ~30s.
 
 | Event | Behaviour |
 |---|---|
-| `silent` | Clear `predicted_position`. Arm idle timer (120s) unless one's already running. |
-| `audible` (album-locked) | Cancel in-flight idle. Try to advance prediction (`_try_advance_prediction`). Publish predicted track. |
+| `silent` | Stamp `quiet_began_at`. Arm idle timer (120s) unless one's already running. The prediction is kept. |
+| `audible` (side timeline followed) | Cancel in-flight idle. The timeline decides: a gap inside a boundary window advances one track, a quiet on the last track of the side flips to the next side's first track, a gap just after a run-out re-times that track, anything else changes nothing. |
+| `audible` (album-locked, no timeline) | Cancel in-flight idle. Try to advance prediction (`_try_advance_prediction`). Publish predicted track. |
 | `audible` (no lock) | Cancel idle. Publish VinylIdentifying spinner. Reset `unmatched_streak = 0`. |
 
 ### Prediction helpers — `orchestrator/prediction.py` (pure) and `orchestrator/_prediction_advance.py` (methods)
@@ -157,7 +164,7 @@ streak threshold trips, the song has actually been playing ~30s.
 |---|---|
 | `_advance_predicted_position(tracks, current)` | Pure: find current's index within its side; return next index or `None` at end-of-side. |
 | `_build_predicted_payload(last_vinyl, predicted, source)` | Pure-ish: look up track via `discogs_catalog.get_release`, merge album fields from `last_vinyl` + track fields from catalog, return payload with `match_method: "predicted"`, `predicted: True`. |
-| `_try_advance_prediction` (method) | Orchestrator method: pick source position (existing prediction or seed from `last_vinyl`), advance, publish, record history. Accepts `track_started_at_override` for streak-seed back-dating. |
+| `_try_advance_prediction` (method) | Orchestrator method: pick source position (existing prediction or seed from `last_vinyl`), advance, publish, record history. Accepts `track_started_at_override` (the timeline's start, or the streak-seed back-date) and `target_track_position`. |
 | `_republish_current_prediction` (method) | Re-emit current prediction without advancing. Used when streak persists past NEEDS_ID_STREAK. |
 
 ### User-pin helper — `orchestrator/pin.py` — `_evaluate_user_pin`
@@ -412,7 +419,7 @@ search-and-pick logic lives in `features/identify/`.
 - **Predicted track** — a track inferred from the locked album's tracklist when Shazam fails. Published with `match_method: "predicted"`, `predicted: true`. Italic on the kiosk.
 - **Album lock** — `state.last_vinyl` holding the last confirmed recognition. Used as `preferred_release_id` for sticky scoring and as the source for prediction.
 - **Sticky release** — the disambiguation bonus that prefers the currently-locked album. +25 in `find_by_artist_title`.
-- **Sustained silent** — `silent` IPC event fired after `--silent-s` (default 5s) of continuous below-floor audio. Clears predicted state and arms idle timer.
+- **Sustained silent** — `silent` IPC event fired after `--silent-s` (default 5s) of continuous below-floor audio. Marks the start of a quiet and arms idle timer.
 - **Audible flap** — quiet-passage audio that oscillates across the silence floor. Debounced via `--audible-debounce-s` (default 30s) so it doesn't repeatedly reset per-side state.
 - **Music level** — audio at `≥ MUSIC_DB` (-30 dB, `nowplaying/vinyl/levels.py`), tested by `_is_music_level` in `orchestrator/streaming_idle.py`.
 - **Side-first** — the first physical track on a side of vinyl. Worth +15 in scoring because users start records from the beginning. Rowid-aware — both "D1" (per-side) and "D15" (cumulative) numbering work.

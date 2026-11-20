@@ -13,6 +13,7 @@ from nowplaying.vinyl import promotion
 from nowplaying.control._shared import (
     _apply_user_track_pin,
     _audible_edge_unix_ts,
+    _follow_pick_on_timeline,
     _is_fresh_side_first_track_for_pin,
     _maybe_schedule_art_fetch,
     _now_iso,
@@ -222,6 +223,7 @@ def _apply_pin_state(
         prior_pin.get("duration_seconds") if isinstance(prior_pin, dict) else None
     )
     _apply_user_track_pin(state, rid, canonical_pos, matched)
+    _follow_pick_on_timeline(state)
     new_pin = getattr(state, "user_track_pin", None)
     pin_ttl_seconds = (
         new_pin.get("duration_seconds") if isinstance(new_pin, dict) else None
