@@ -58,6 +58,9 @@ class _UnmatchedMixin:
         guess that `_try_advance_prediction` sets on the payload, because
         `_attach_pending_guess` runs after and gives `state.pending_guess`
         precedence. The full LLM reasoning (alt, source='llm') is preserved.
+
+        Runs only when no side timeline is followed (a guess does not move
+        the track while one is).
         """
         guess = state.pending_guess
         if guess is None:
@@ -252,6 +255,11 @@ class _UnmatchedMixin:
         # seed if streak just hit NEEDS_ID_STREAK, or fall to NEEDS_ID.
         if await self._decide_anchored_advance(state, audio_source_label):
             return
+        if state.side_timeline is not None:
+            # The timeline holds a confirmed track through misses and moves
+            # on by its own rules; the streak neither seeds a back-dated
+            # prediction nor asks the LLM nor drops to needs-id.
+            return
         cold = await self._decide_cold_start(state, audio_source_label)
         if cold is True:
             return
@@ -275,6 +283,8 @@ class _UnmatchedMixin:
         F6 LLM hook (optional): when enabled, asks Haiku which track on
         the locked side the needle is on now. The LLM verdict overrides
         the heuristic "advance to next sequential track" pick.
+
+        Runs only when no side timeline is followed.
         """
         state = self.state
         # The song has actually been playing for roughly NEEDS_ID_STREAK

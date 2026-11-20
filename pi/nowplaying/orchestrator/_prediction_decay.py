@@ -1,18 +1,23 @@
 """State-decay helpers — when to clear stale last_vinyl state.
 
-Contains: _decay_pin_check, _check_state_decay.
+Contains: _decay_pin_check, _check_state_decay, _timeline_is_held,
+_tick_side_timeline.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from nowplaying.orchestrator import side_timeline
 from nowplaying.orchestrator._first_miss import (
     clear_first_miss_after_match,
 )
+from nowplaying.orchestrator._prediction_advance import iso_z
 from nowplaying.orchestrator.pin import (
     _fingerprint_anchor_ttl_expired,
+    _pin_in_decay,
     _pin_ttl_expired,
 )
 from nowplaying.orchestrator.prediction import _elapsed_in_track_s
@@ -94,6 +99,9 @@ class _DecayMixin:
 
         Decay is suppressed when:
           - last_vinyl is None (nothing to decay)
+          - a side timeline is being followed: it is asked whether the
+            track's listed time has run out, and if so the next track is
+            published (returns True); needs-id is never forced
           - last_vinyl_confidence_set_at is None (path that set last_vinyl
             was not a vinyl-recognition path, e.g. Sonos airplay/streaming)
           - age < STATE_DECAY_S (recognition is still fresh)
@@ -108,6 +116,10 @@ class _DecayMixin:
         state = self.state
         if state.last_vinyl is None:
             return False
+        if state.side_timeline is not None:
+            # A track the timeline holds is not decayed: it ends when its
+            # listed time runs out, a gap arrives or something is identified.
+            return await self._tick_side_timeline(audio_source_label)
         stamped_at = state.last_vinyl_confidence_set_at
         if stamped_at is None:
             return False
@@ -152,3 +164,47 @@ class _DecayMixin:
         # internal routing without duplicating it at call sites.
         await self._publish_needs_id(audio_source_label, level_db)
         return True
+
+    @staticmethod
+    def _timeline_is_held(state: "State", now_mono: float) -> bool:
+        """True while a user pin (outside its final decay window) or a live
+        fingerprint anchor holds the track on screen, so the timeline does
+        not run it out."""
+        pin = state.user_track_pin
+        if (
+            pin is not None
+            and not _pin_ttl_expired(pin, now_mono)
+            and not _pin_in_decay(pin, now_mono)
+        ):
+            return True
+        anchor = state.fingerprint_anchor
+        return anchor is not None and not _fingerprint_anchor_ttl_expired(
+            anchor, now_mono,
+        )
+
+    async def _tick_side_timeline(self, audio_source_label: str) -> bool:
+        """An unmatched heartbeat while a side timeline is followed: when the
+        current track's listed time has run out, publish the next track with
+        its start at that listed end. Returns True if it was published.
+        """
+        state = self.state
+        tl = state.side_timeline
+        if self._timeline_is_held(state, asyncio.get_running_loop().time()):
+            return False
+        action = side_timeline.on_tick(
+            tl, datetime.now(timezone.utc),
+            quiet=state.quiet_began_at is not None,
+        )
+        if action is not side_timeline.Action.ADVANCE:
+            return False
+        start = iso_z(tl.started_at)
+        log.info(
+            "timeline: advance side=%s position=%s start=%s (run-out)",
+            tl.side, tl.position, start,
+        )
+        return await self._try_advance_prediction(
+            state, audio_source_label, self.bcast,
+            target_track_position=tl.position,
+            track_started_at_override=start,
+        )
+

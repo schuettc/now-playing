@@ -8,7 +8,12 @@ from aiohttp import web
 from nowplaying.discogs import catalog as discogs_catalog
 from nowplaying.vinyl.runtime import to_now_playing_vinyl
 
-from nowplaying.control._shared import _now_iso, _tracklist_from_release, log
+from nowplaying.control._shared import (
+    _follow_pick_on_timeline,
+    _now_iso,
+    _tracklist_from_release,
+    log,
+)
 
 
 def _match_track_by_title(rel: dict, title_lc: str) -> tuple[str | None, str | None]:
@@ -63,6 +68,7 @@ def _apply_select_state(state, payload: dict, new_rid: int) -> None:
         log.info("pin released: reason=select_release new_rid=%s", new_rid)
     state.user_track_pin = None
     state.pin_different_track_streak = 0
+    _follow_pick_on_timeline(state)
 
 
 async def select_release(request: web.Request) -> web.Response:

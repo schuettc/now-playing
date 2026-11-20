@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from nowplaying.orchestrator.guess import _guess_is_dismissed
 from nowplaying.orchestrator.prediction import _elapsed_in_track_s
+from nowplaying.orchestrator.side_timeline import SideTimeline
 from nowplaying.vinyl.levels import MUSIC_DB
 
 if TYPE_CHECKING:
@@ -333,6 +335,10 @@ class TrackGuessMixin:
         """Estimate the current position on the side (seconds from the side's
         start).
 
+        While a side timeline is followed it is the answer: the cumulative
+        start of its current track plus the time since that track started
+        (None when the timeline is on another side than ``side_tracklist``).
+
         Pin-anchored when a user pin is live — stable across predicted-advance
         drift (which is what reinforced the racing): ``cum_start(pin pos) +
         initial_track_position_s + pin age``. Otherwise, while a predicted
@@ -343,6 +349,13 @@ class TrackGuessMixin:
         first track and use elapsed-since-audible-up.
         Returns None when no input is usable.
         """
+        tl = getattr(state, "side_timeline", None)
+        if isinstance(tl, SideTimeline):
+            cs = _cum_start_s(side_tracklist, tl.position)
+            if cs is None:
+                return None
+            since = (datetime.now(timezone.utc) - tl.started_at).total_seconds()
+            return cs + max(0.0, since)
         pin = getattr(state, "user_track_pin", None)
         if isinstance(pin, dict) and pin.get("track_position"):
             cs = _cum_start_s(side_tracklist, pin["track_position"])
@@ -419,6 +432,9 @@ class TrackGuessMixin:
         pos = _position_for_side_offset(side_tracklist, est)
         if not pos:
             return None
+        if state.side_timeline is not None:
+            # A guess does not move the track while a timeline is followed.
+            pos = state.side_timeline.position
         # The track on screen: the prediction when one is active, else the
         # confirmed lock.
         predicted = state.predicted_position

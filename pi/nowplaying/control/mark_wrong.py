@@ -33,6 +33,7 @@ async def mark_wrong(request: web.Request) -> web.Response:
     # User says the album is wrong → any in-flight prediction is based
     # on the wrong release; clear it so the next heartbeat starts clean.
     state.predicted_position = None
+    state.side_timeline = None
     if state.user_track_pin is not None:
         log.info("pin released: reason=mark_wrong")
     state.user_track_pin = None

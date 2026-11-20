@@ -388,7 +388,8 @@ def test_confirmation_path_unaffected_when_lock_present(
 
     from nowplaying.vinyl import fingerprint as fp
     monkeypatch.setattr(fp, "match", fake_match)
-    # get_release should NOT be called on the confirmation path
+    # The confirmation path builds its payload from the lock, not Discogs;
+    # the one catalog read is the side timeline loading the track list.
     get_release_calls: list = []
     from nowplaying.discogs import catalog as cat
     monkeypatch.setattr(cat, "get_release", lambda rid: get_release_calls.append(rid) or None)
@@ -399,8 +400,7 @@ def test_confirmation_path_unaffected_when_lock_present(
     # Confirmation scan used release_id=12345 (not None)
     assert len(match_calls) == 1
     assert match_calls[0] == 12345
-    # Discogs catalog NOT consulted on confirmation path
-    assert get_release_calls == []
+    assert get_release_calls == [12345]
     # Published payload built from locked tracklist, not discogs
     published = orch.bcast.publish.await_args.args[0]
     assert published["release_id"] == 12345

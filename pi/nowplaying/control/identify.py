@@ -13,6 +13,7 @@ from nowplaying.vinyl.runtime import to_now_playing_vinyl
 from nowplaying.control._shared import (
     _apply_user_track_pin,
     _audible_edge_unix_ts,
+    _follow_pick_on_timeline,
     _is_fresh_side_first_track_for_pin,
     _maybe_schedule_art_fetch,
     _now_iso,
@@ -104,6 +105,7 @@ def _apply_identify_state(
     _apply_user_track_pin(
         state, rid, pos, matched, reliable_position_s=reliable_position_s,
     )
+    _follow_pick_on_timeline(state)
     # Retroactive coverage backfill — only fire for the first track of
     # a fresh side, where the audible-edge bounds a single track. For
     # tracks 2+ on a side, forward-only pin coverage is the safer

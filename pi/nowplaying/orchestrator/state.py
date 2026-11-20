@@ -3,6 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import collections
+from datetime import datetime
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from nowplaying.orchestrator.side_timeline import SideTimeline
 
 
 class State:  # skylos: ignore SKY-Q501 — State is intentionally the orchestrator's single state container. Splitting it would just scatter mutations across multiple objects passed through every method signature, which is the opposite of the design (one canonical state, mutated in one place per concern). Same rationale as the Orchestrator class's SKY-Q501 suppress.
@@ -40,6 +45,9 @@ class State:  # skylos: ignore SKY-Q501 — State is intentionally the orchestra
         self.fingerprint_anchor = None
         self.recent_fp_hits.clear()
         self.predicted_position = None
+        self.side_timeline = None
+        self.quiet_began_at = None
+        self.offcollection_ignored = None
         self.pending_guess = None
         self.dismissed_guesses.clear()
         self.last_shazam_gated = None
@@ -175,6 +183,18 @@ class State:  # skylos: ignore SKY-Q501 — State is intentionally the orchestra
         #   {release_id: int, side: str, track_position: str, index_in_side: int}
         # See docs/features/tracklist-aware-advancement/.
         self.predicted_position: dict | None = None
+        # The side being followed: current track, its start and the expected
+        # boundaries. Set by a match on a release with a track list, moved by
+        # the audible-edge and run-out hooks, cleared on idle or source
+        # change. predicted_position stays the record of what is on screen;
+        # its track_started_at comes from here.
+        self.side_timeline: "SideTimeline | None" = None
+        # When the quiet now in progress began (the `silent` edge minus its
+        # five-second delay), or None when sound is playing.
+        self.quiet_began_at: datetime | None = None
+        # Normalised (artist, title) of the last match outside the
+        # collection that was ignored mid-side, so it is logged once.
+        self.offcollection_ignored: tuple[str, str] | None = None
         # Nested `guess` object stash. Set on a Shazam-miss + fingerprint-
         # miss heartbeat by the orchestrator's `_compute_track_guess`
         # helper; attached and cleared in `_anchor_and_publish` (single

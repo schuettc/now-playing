@@ -8,6 +8,7 @@ from aiohttp import web
 from nowplaying.discogs import catalog as discogs_catalog
 
 from nowplaying.control._shared import (
+    _follow_pick_on_timeline,
     _maybe_schedule_art_fetch,
     _now_iso,
     _tracklist_from_release,
@@ -113,6 +114,7 @@ async def next_track(request: web.Request) -> web.Response:
 
     _advance_last_vinyl(state, nxt, now_iso, next_pos, next_title)
     _advance_pin_if_active(state, rid, nxt, next_pos)
+    _follow_pick_on_timeline(state)
 
     log.info(
         "control: next-track advance from %s to %s on release=%s",
@@ -149,6 +151,9 @@ def _advance_last_vinyl(
     if next_side:
         state.last_vinyl["side"] = next_side
     state.track_started_at = now_iso
+    # The pick is the track on screen now; a prediction made before it must
+    # not be re-published over it.
+    state.predicted_position = None
     state.pending_shazam_only.clear()
 
 

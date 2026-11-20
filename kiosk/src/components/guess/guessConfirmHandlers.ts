@@ -25,29 +25,31 @@ export function guessLifetimeMs(guess: Pick<Guess, 'expires_in_s'>): number {
     : MOTION.guessTimeoutMs;
 }
 
-async function postDismissGuess(release_id: number, track_position: string): Promise<void> {
-  try {
-    await fetch('/api/dismiss-guess', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ release_id, track_position }),
-    });
-  } catch {
-    // Best-effort; the optimistic clearGuess() already removed the
-    // prompt locally. If the backend never gets the signal it'll
-    // re-emit the guess on the next heartbeat, and the user can
-    // dismiss again. Not worth blocking the UX over a network blip.
-  }
+/**
+ * Start the card's lifetime clock. When it runs out the card is cleared
+ * locally and remembered as run out, so it does not come back for the
+ * same track. Nothing is posted: a card nobody answered is not a
+ * rejection. Returns the cancel function.
+ */
+export function scheduleGuessExpiry(
+  lifetimeMs: number,
+  latestGuess: () => Pick<Guess, 'confidence' | 'source'>,
+  variant: GuessVariant,
+): () => void {
+  const t = setTimeout(() => {
+    const { confidence, source } = latestGuess();
+    telemetryTrack('identify_guess_timeout', { variant, confidence, source });
+    useStore.getState().expireGuess();
+  }, lifetimeMs);
+  return () => clearTimeout(t);
 }
 
 /**
  * Tap handlers and the single lifetime clock for `GuessConfirmCard`.
  *
  * Reads `payload.release_id` dynamically on each tap so a mid-prompt
- * record swap doesn't send `/api/dismiss-guess` to the wrong album.
- * When the lifetime runs out it fires both the local `clearGuess()` and
- * `POST /api/dismiss-guess` so the backend stops emitting the same
- * guess afterward.
+ * record swap doesn't pin a track on the wrong album. When the lifetime
+ * runs out the card is cleared locally (see `scheduleGuessExpiry`).
  */
 export function useGuessConfirmHandlers(
   guess: Guess,
@@ -81,23 +83,11 @@ export function useGuessConfirmHandlers(
   const latestGuess = useRef(guess);
   latestGuess.current = guess;
 
-  // Lifetime over: clear locally + POST dismiss + telemetry.
-  useEffect(() => {
-    const t = setTimeout(() => {
-      const { position, confidence, source } = latestGuess.current;
-      const rid = useStore.getState().payload?.release_id;
-      telemetryTrack('identify_guess_timeout', {
-        variant,
-        confidence,
-        source,
-      });
-      if (typeof rid === 'number') {
-        void postDismissGuess(rid, position);
-      }
-      useStore.getState().clearGuess();
-    }, lifetimeMs);
-    return () => clearTimeout(t);
-  }, [lifetimeMs, variant]);
+  // Lifetime over: clear locally + telemetry.
+  useEffect(
+    () => scheduleGuessExpiry(lifetimeMs, () => latestGuess.current, variant),
+    [lifetimeMs, variant],
+  );
 
   const currentReleaseId = (): number | null | undefined =>
     useStore.getState().payload?.release_id;

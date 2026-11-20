@@ -118,6 +118,7 @@ def orch(monkeypatch):
     }
     o.state.unmatched_streak = NEEDS_ID_STREAK  # streak just hit the threshold
     o.state.predicted_position = None  # fresh seed path
+    o.state.side_timeline = None       # these cases have no side timeline
     o.state.user_track_pin = None      # overridden per-test
     o.state.fingerprint_anchor = None  # overridden per anchor test
     o.state.idle_task = None
