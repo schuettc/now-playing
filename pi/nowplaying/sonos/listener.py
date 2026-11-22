@@ -29,6 +29,7 @@ from typing import Awaitable, Callable
 
 from soco import SoCo, config as soco_config, discover, events_asyncio
 
+from nowplaying.sonos._group_follow import GroupFollower
 from nowplaying.sonos._listener_supervisor import (
     _ListenerSupervisor,
     _SonosListener,
@@ -136,16 +137,23 @@ async def run_listener(
     if on_coord is not None:
         on_coord(coord)
 
-    listener = _SonosListener(coord, on_event, loop)
+    # While the zone is a member of another room's group, what is playing
+    # is on that group's leader: the follower subscribes to it as well and
+    # publishes its events as the zone's.
+    follower = GroupFollower(
+        coord, on_event, loop,
+        on_coord=on_coord, build_initial_payload=_build_initial_payload,
+    )
+    listener = _SonosListener(coord, follower.on_zone_event, loop)
     sup = _ListenerSupervisor(
-        coord, zone_name, on_event, listener, loop, stop,
+        coord, zone_name, follower.on_zone_event, listener, loop, stop,
         dead_timeout=_DEAD_LISTENER_TIMEOUT_S,
         watchdog_interval=_WATCHDOG_INTERVAL_S,
         startup_timeout=_STARTUP_PROBE_TIMEOUT_S,
         max_resub_failures=_MAX_RESUB_FAILURES,
         find_zone_fn=find_zone,
         build_initial_payload_fn=_build_initial_payload,
-        on_coord_change=on_coord,
+        on_coord_change=follower.adopt_zone,
     )
 
     await sup.subscribe_once()
@@ -168,6 +176,7 @@ async def run_listener(
         watchdog_task.cancel()
         stop_task.cancel()
         for label, coro in (
+            ("stop following group leader", follower.close()),
             ("unsubscribe AVTransport", sup.sub_box[0].unsubscribe() if sup.sub_box[0] else _noop()),
             ("stop event listener", events_asyncio.event_listener.async_stop()),
         ):
@@ -185,20 +194,34 @@ async def _noop() -> None:
 async def emit_initial_state(zone_name: str, on_event: EventHandler) -> None:
     """Probe the current Sonos state once at startup so the kiosk has something
     to render before the next AVTransport event fires."""
-    coord = await asyncio.get_running_loop().run_in_executor(None, find_zone, zone_name)
+    loop = asyncio.get_running_loop()
+    coord = await loop.run_in_executor(None, find_zone, zone_name)
     if coord is None:
         return
     try:
-        info = await asyncio.get_running_loop().run_in_executor(None, coord.get_current_track_info)
-        ti = await asyncio.get_running_loop().run_in_executor(None, coord.get_current_transport_info)
+        payload = await loop.run_in_executor(None, _probe_state, coord)
     except Exception as e:
         log.warning("[sonos] initial probe failed: %r", e)
         return
-
-    payload = _build_initial_payload(coord, info, ti)
     result = on_event(payload)
     if asyncio.iscoroutine(result):
         await result
+
+
+def _probe_state(coord: SoCo) -> dict:
+    """The zone's current state; its group leader's when the zone is a
+    member of another room's group, since that is where the music is."""
+    payload = _build_initial_payload(
+        coord, coord.get_current_track_info(), coord.get_current_transport_info(),
+    )
+    if payload["source"] != "grouped":
+        return payload
+    leader = coord.group.coordinator
+    if leader is None or leader.uid == coord.uid:
+        return payload
+    return _build_initial_payload(
+        leader, leader.get_current_track_info(), leader.get_current_transport_info(),
+    )
 
 
 def get_zone_name() -> str:
