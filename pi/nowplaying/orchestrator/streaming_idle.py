@@ -130,7 +130,10 @@ def _should_arm_streaming_idle(
     `state.idle_task is not None and not state.idle_task.done()`.
 
     Arming conditions (all must hold):
-      - Source is streaming or airplay.
+      - Source is streaming, airplay or vinyl. A paused turntable input
+        never becomes STOPPED and makes no sound for the capture-silence
+        timer, so without this it held the vinyl screen indefinitely.
+        Resume is left to the capture heartbeat (it retracts the timer).
       - Transport state is PAUSED_PLAYBACK. STOPPED is intentionally
         NOT armed because the kiosk's `showIdle` already idles
         immediately on STOPPED (`state === 'STOPPED'`) — arming a
@@ -140,7 +143,7 @@ def _should_arm_streaming_idle(
       - No idle task currently running (avoid stacking on Sonos's
         ~15s repoll cadence).
     """
-    if payload_source not in ("streaming", "airplay"):
+    if payload_source not in ("streaming", "airplay", "vinyl"):
         return False
     if payload_state != "PAUSED_PLAYBACK":
         return False
