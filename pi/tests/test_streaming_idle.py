@@ -255,9 +255,21 @@ def test_no_arm_when_playing():
     ) is False
 
 
-def test_no_arm_when_source_not_streaming_or_airplay():
-    """Vinyl uses the capture-silence path; TV/line-in have no idle path."""
-    for src in ("vinyl", "tv", "line-in", "unknown", None):
+def test_arm_when_vinyl_paused():
+    """A paused turntable input never becomes STOPPED and makes no sound for
+    the capture-silence path to time, so without this the screen held the
+    vinyl screen from 2026-11-21 21:24 until the next day."""
+    assert _should_arm_streaming_idle(
+        payload_source="vinyl",
+        payload_state="PAUSED_PLAYBACK",
+        idled_source=None,
+        idle_task_alive=False,
+    ) is True
+
+
+def test_no_arm_when_source_has_no_pause_idle():
+    """TV/line-in and unknown sources have no idle path."""
+    for src in ("tv", "line-in", "unknown", None):
         assert _should_arm_streaming_idle(
             payload_source=src,
             payload_state="PAUSED_PLAYBACK",
